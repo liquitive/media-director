@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sora Script Renderer</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: var(--vscode-font-family);
+            background-color: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+            line-height: 1.6;
+        }
+
+        .script-header {
+            background-color: var(--vscode-panel-background);
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .script-header h2 {
+            margin: 0 0 10px 0;
+            color: var(--vscode-textLink-foreground);
+        }
+
+        .script-header p {
+            margin: 5px 0;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .script-timeline {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .segment-card {
+            background-color: var(--vscode-panel-background);
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 6px;
+            padding: 15px;
+            transition: all 0.2s ease;
+        }
+
+        .segment-card:hover {
+            border-color: var(--vscode-focusBorder);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .segment-card.pending {
+            border-left: 4px solid var(--vscode-charts-yellow);
+        }
+
+        .segment-card.generating {
+            border-left: 4px solid var(--vscode-charts-blue);
+        }
+
+        .segment-card.completed {
+            border-left: 4px solid var(--vscode-charts-green);
+        }
+
+        .segment-card.failed {
+            border-left: 4px solid var(--vscode-charts-red);
+        }
+
+        .segment-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+
+        .segment-number {
+            font-weight: bold;
+            color: var(--vscode-textLink-foreground);
+        }
+
+        .segment-duration {
+            background-color: var(--vscode-badge-background);
+            color: var(--vscode-badge-foreground);
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+        }
+
+        .segment-status {
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            text-transform: uppercase;
+            font-weight: bold;
+        }
+
+        .segment-status.pending {
+            background-color: var(--vscode-charts-yellow);
+            color: var(--vscode-editor-background);
+        }
+
+        .segment-status.generating {
+            background-color: var(--vscode-charts-blue);
+            color: var(--vscode-editor-background);
+        }
+
+        .segment-status.completed {
+            background-color: var(--vscode-charts-green);
+            color: var(--vscode-editor-background);
+        }
+
+        .segment-status.failed {
+            background-color: var(--vscode-charts-red);
+            color: var(--vscode-editor-background);
+        }
+
+        .segment-content {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .segment-text,
+        .segment-prompt,
+        .segment-camera,
+        .segment-lighting,
+        .segment-mood {
+            padding: 8px;
+            background-color: var(--vscode-input-background);
+            border-radius: 4px;
+            border: 1px solid var(--vscode-input-border);
+        }
+
+        .segment-text strong,
+        .segment-prompt strong,
+        .segment-camera strong,
+        .segment-lighting strong,
+        .segment-mood strong {
+            color: var(--vscode-textLink-foreground);
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .progress-bar {
+            background-color: var(--vscode-progressBar-background);
+            border-radius: 10px;
+            height: 8px;
+            margin: 20px 0;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            background-color: var(--vscode-progressBar-foreground);
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .empty-state h3 {
+            margin-bottom: 10px;
+            color: var(--vscode-foreground);
+        }
+    </style>
+</head>
+<body>
+    <div id="scriptContent">
+        <div class="empty-state">
+            <h3>No Script Data</h3>
+            <p>Load a script JSON file to see the rendered view</p>
+        </div>
+    </div>
+
+    <script>
+        function renderScript(script) {
+            const container = document.getElementById('scriptContent');
+            
+            if (!script || !script.segments || !Array.isArray(script.segments)) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <h3>No Script Data</h3>
+                        <p>Load a script JSON file to see the rendered view</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            // Calculate progress
+            const totalSegments = script.segments.length;
+            const completedSegments = script.segments.filter(s => s.status === 'completed').length;
+            const progressPercentage = totalSegments > 0 ? (completedSegments / totalSegments) * 100 : 0;
+            
+            let html = `
+                <div class="script-header">
+                    <h2>${script.storyName || 'Untitled Story'}</h2>
+                    <p>Story ID: ${script.storyId || 'Unknown'}</p>
+                    <p>Created: ${script.createdAt ? new Date(script.createdAt).toLocaleString() : 'Unknown'}</p>
+                </div>
+                
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: ${progressPercentage}%"></div>
+                </div>
+                
+                <div class="script-timeline">
+            `;
+            
+            script.segments.forEach((segment, index) => {
+                const statusClass = segment.status || 'pending';
+                const duration = segment.duration || 4;
+                
+                html += `
+                    <div class="segment-card ${statusClass}">
+                        <div class="segment-header">
+                            <span class="segment-number">Segment ${index + 1}</span>
+                            <span class="segment-duration">${duration}s</span>
+                            <span class="segment-status ${statusClass}">${statusClass}</span>
+                        </div>
+                        <div class="segment-content">
+                            <div class="segment-text">
+                                <strong>Text:</strong> ${segment.text || 'No text'}
+                            </div>
+                            <div class="segment-prompt">
+                                <strong>Visual Prompt:</strong> ${segment.visualPrompt || 'No prompt'}
+                            </div>
+                            ${segment.cameraWork ? `<div class="segment-camera"><strong>Camera:</strong> ${segment.cameraWork}</div>` : ''}
+                            ${segment.lighting ? `<div class="segment-lighting"><strong>Lighting:</strong> ${segment.lighting}</div>` : ''}
+                            ${segment.mood ? `<div class="segment-mood"><strong>Mood:</strong> ${segment.mood}</div>` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+            container.innerHTML = html;
+        }
+
+        // Export function for use by the editor
+        window.renderScript = renderScript;
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+

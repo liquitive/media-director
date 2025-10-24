@@ -1,0 +1,40 @@
+# Node modules
+node_modules/
+
+# Compiled output
+out/
+dist/
+
+# Built extension packages
+*.vsix
+
+# TypeScript build info
+*.tsbuildinfo
+
+# VS Code settings (optional, keep if you want to share settings)
+.vscode/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor backup files
+*.backup
+*~
+
+# Environment variables
+.env
+.env.local
+
+# Temporary files
+*.tmp
+*.temp
+
+# Testing
+coverage/
+.nyc_output/

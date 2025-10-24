@@ -1,0 +1,643 @@
+{
+  "name": "sora-director",
+  "displayName": "Sora Video Director",
+  "description": "AI-powered video generation using OpenAI Sora - create music videos, visual stories, and cinematic content directly in VS Code",
+  "version": "0.1.0",
+  "publisher": "liquitive",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/liquitive/media-director.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:soraStories",
+    "onView:soraAssets",
+    "onCommand:sora.createStory",
+    "onCommand:sora.editStoryDetails",
+    "onCommand:sora.addTextContent",
+    "onCommand:sora.addSegmentManually",
+    "onCommand:sora.importContentToStory",
+    "onCommand:sora.openStory",
+    "onCommand:sora.generateVideo",
+    "onCommand:sora.executeStory",
+    "onCustomEditor:sora.storyConfigEditor",
+    "onCustomEditor:sora.assetEditor",
+    "onCustomEditor:sora.audioPlayer",
+    "onCustomEditor:sora.videoPlayer",
+    "onCustomEditor:sora.segmentEditor",
+    "onCustomEditor:sora.scriptEditor"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sora-director",
+          "title": "Sora Video Director",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "sora-director": [
+        {
+          "id": "soraStories",
+          "name": "Stories"
+        },
+        {
+          "id": "soraAssets",
+          "name": "Asset Library"
+        }
+      ]
+    },
+    "customEditors": [
+      {
+        "viewType": "sora.storyConfigEditor",
+        "displayName": "Story Configuration",
+        "selector": [
+          {
+            "filenamePattern": "**/.sora/stories/*/config.json"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "sora.assetEditor",
+        "displayName": "Asset Editor",
+        "selector": [
+          {
+            "filenamePattern": "**/.sora/assets/asset_*.json"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "sora.audioPlayer",
+        "displayName": "Audio Player",
+        "selector": [
+          {
+            "filenamePattern": "**/*.mp3"
+          },
+          {
+            "filenamePattern": "**/*.wav"
+          },
+          {
+            "filenamePattern": "**/*.m4a"
+          },
+          {
+            "filenamePattern": "**/*.ogg"
+          }
+        ],
+        "priority": "option"
+      },
+      {
+        "viewType": "sora.videoPlayer",
+        "displayName": "Video Player",
+        "selector": [
+          {
+            "filenamePattern": "**/*.mp4"
+          },
+          {
+            "filenamePattern": "**/*.mov"
+          },
+          {
+            "filenamePattern": "**/*.avi"
+          },
+          {
+            "filenamePattern": "**/*.mkv"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "sora.segmentEditor",
+        "displayName": "Segment Editor",
+        "selector": [
+          {
+            "filenamePattern": "**/.sora/stories/*/segments/segment_*.json"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "sora.scriptEditor",
+        "displayName": "Sora Script Editor",
+        "selector": [
+          {
+            "filenamePattern": "**/scripts/script*.json"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "sora.initializeProject",
+        "title": "Initialize Sora Project",
+        "category": "Sora",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "sora.createStory",
+        "title": "Create New Story",
+        "category": "Sora",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sora.editStoryDetails",
+        "title": "Edit Story Details",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.addTextContent",
+        "title": "Add Text Content",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.addSegmentManually",
+        "title": "Add Segment Manually",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.importContentToStory",
+        "title": "Import Content to Story",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.openStory",
+        "title": "Open Story",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.deleteStory",
+        "title": "Delete Story",
+        "category": "Sora",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sora.clearAllStories",
+        "title": "Clear All Stories (Wipe Workspace State)",
+        "category": "Sora",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sora.refreshStories",
+        "title": "Refresh Stories",
+        "category": "Sora",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "sora.analyzeContent",
+        "title": "Analyze Content",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.generateScript",
+        "title": "Generate Script",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.executeProduction",
+        "title": "Execute Video Production",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.viewMedia",
+        "title": "View Media Library",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.showProgress",
+        "title": "Show Progress",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.openScript",
+        "title": "Open Script",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.openStorylineEditor",
+        "title": "Open Storyline Editor",
+        "category": "Sora",
+        "icon": "$(timeline-view-icon)"
+      },
+      {
+        "command": "sora.regenerateScript",
+        "title": "Regenerate Script",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.generateCharacterImages",
+        "title": "Generate Character Reference Images",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.openSegmentsFolder",
+        "title": "Open Segments Folder",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.generateAllSegments",
+        "title": "Generate All Segments",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.generateSegment",
+        "title": "Generate Segment",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.editSegment",
+        "title": "Edit Segment",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.previewSegment",
+        "title": "Preview Segment",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.openCompletedFolder",
+        "title": "Open Completed Folder",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.playVideo",
+        "title": "Play Video",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.openSourceFolder",
+        "title": "Open Source Folder",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.viewTimingMap",
+        "title": "View Timing Map",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.regenerateResearch",
+        "title": "Regenerate Research",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.openFile",
+        "title": "Open File",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.showAIProviders",
+        "title": "Show AI Providers",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.installPythonDependencies",
+        "title": "Install Python Audio Analysis Dependencies",
+        "category": "Sora",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "sora.showProgressPanel",
+        "title": "Show Progress Panel",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.testProgressPanel",
+        "title": "Test Progress Panel",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.viewAsset",
+        "title": "View Asset Details",
+        "category": "Sora"
+      },
+      {
+        "command": "sora.createAsset",
+        "title": "Create New Asset",
+        "category": "Sora",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sora.editAsset",
+        "title": "Edit Asset",
+        "category": "Sora",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "sora.deleteAsset",
+        "title": "Delete Asset",
+        "category": "Sora",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sora.generateAssetImage",
+        "title": "Generate Reference Image",
+        "category": "Sora",
+        "icon": "$(file-media)"
+      },
+      {
+        "command": "sora.deleteAssetImage",
+        "title": "Delete Reference Image",
+        "category": "Sora",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "sora.searchAssets",
+        "title": "Search Assets",
+        "category": "Sora",
+        "icon": "$(search)"
+      },
+      {
+        "command": "sora.refreshAssets",
+        "title": "Refresh Asset Library",
+        "category": "Sora",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "sora.createStory",
+          "when": "view == soraStories",
+          "group": "navigation"
+        },
+        {
+          "command": "sora.refreshStories",
+          "when": "view == soraStories",
+          "group": "navigation"
+        },
+        {
+          "command": "sora.createAsset",
+          "when": "view == soraAssets",
+          "group": "navigation"
+        },
+        {
+          "command": "sora.searchAssets",
+          "when": "view == soraAssets",
+          "group": "navigation"
+        },
+        {
+          "command": "sora.refreshAssets",
+          "when": "view == soraAssets",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sora.openStory",
+          "when": "view == soraStories && viewItem == story",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sora.openStorylineEditor",
+          "when": "view == soraStories && viewItem == story",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sora.generateScript",
+          "when": "view == soraStories && viewItem == story",
+          "group": "actions@1"
+        },
+        {
+          "command": "sora.executeProduction",
+          "when": "view == soraStories && viewItem == story",
+          "group": "actions@2"
+        },
+        {
+          "command": "sora.regenerateScript",
+          "when": "view == soraStories && viewItem == story",
+          "group": "actions@3"
+        },
+        {
+          "command": "sora.editStoryDetails",
+          "when": "view == soraStories && viewItem == story",
+          "group": "edit@1"
+        },
+        {
+          "command": "sora.deleteStory",
+          "when": "view == soraStories && viewItem == story",
+          "group": "danger@1"
+        },
+        {
+          "command": "sora.openScript",
+          "when": "view == soraStories && viewItem == script",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sora.openStorylineEditor",
+          "when": "view == soraStories && viewItem == story",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sora.regenerateScript",
+          "when": "view == soraStories && viewItem == script",
+          "group": "actions@1"
+        },
+        {
+          "command": "sora.openSegmentsFolder",
+          "when": "view == soraStories && viewItem == segments",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sora.generateAllSegments",
+          "when": "view == soraStories && viewItem == segments",
+          "group": "actions@1"
+        },
+        {
+          "command": "sora.generateSegment",
+          "when": "view == soraStories && viewItem == segment",
+          "group": "actions@1"
+        },
+        {
+          "command": "sora.editSegment",
+          "when": "view == soraStories && viewItem == segment",
+          "group": "edit@1"
+        },
+        {
+          "command": "sora.previewSegment",
+          "when": "view == soraStories && viewItem == segment",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sora.openCompletedFolder",
+          "when": "view == soraStories && viewItem == completed",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sora.playVideo",
+          "when": "view == soraStories && viewItem == video",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sora.openSourceFolder",
+          "when": "view == soraStories && viewItem == source",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sora.viewTimingMap",
+          "when": "view == soraStories && viewItem == story",
+          "group": "story@7"
+        },
+        {
+          "command": "sora.openFile",
+          "when": "view == soraStories && viewItem == file",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sora.viewAsset",
+          "when": "view == soraAssets && viewItem == asset",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sora.editAsset",
+          "when": "view == soraAssets && viewItem == asset",
+          "group": "edit@1"
+        },
+        {
+          "command": "sora.generateAssetImage",
+          "when": "view == soraAssets && viewItem == asset",
+          "group": "actions@1"
+        },
+        {
+          "command": "sora.deleteAssetImage",
+          "when": "view == soraAssets && viewItem == asset",
+          "group": "actions@2"
+        },
+        {
+          "command": "sora.deleteAsset",
+          "when": "view == soraAssets && viewItem == asset",
+          "group": "danger@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Sora Video Director",
+      "properties": {
+        "sora.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI API Key (required for Whisper, Sora, DALL-E). Text tasks will use IDE AI when available to save costs.",
+          "order": 1
+        },
+        "sora.preferTextProvider": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "ide",
+            "openai"
+          ],
+          "default": "auto",
+          "description": "Text AI provider preference: auto (IDE AI if available), ide (force IDE AI), openai (force OpenAI GPT-4)",
+          "order": 2
+        },
+        "sora.model": {
+          "type": "string",
+          "enum": [
+            "sora-2",
+            "sora-2-pro"
+          ],
+          "default": "sora-2",
+          "description": "Sora model to use for video generation",
+          "order": 2
+        },
+        "sora.maxParallelStories": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum number of stories to generate in parallel",
+          "order": 4
+        },
+        "sora.ffmpegPath": {
+          "type": "string",
+          "default": "ffmpeg",
+          "description": "Path to FFmpeg executable (leave as 'ffmpeg' if in PATH)",
+          "order": 5
+        },
+        "sora.maxPromptChars": {
+          "type": "number",
+          "default": 500,
+          "minimum": 200,
+          "maximum": 1000,
+          "description": "Maximum character length for Sora video generation prompts (default: 500, following Sora 2 best practices)",
+          "order": 6
+        },
+        "sora.optimizeSoraPrompts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use AI to optimize prompts for Sora before generation (recommended for best results)",
+          "order": 7
+        },
+        "sora.generateAssetImages": {
+          "type": "boolean",
+          "default": false,
+          "description": "Generate reference images for assets using DALL-E (increases costs but improves visual consistency)",
+          "order": 8
+        },
+        "sora.assistantTimeout": {
+          "type": "number",
+          "default": 300,
+          "minimum": 60,
+          "maximum": 600,
+          "description": "Timeout in seconds for OpenAI Assistant API operations (script generation, validation, etc.). Default: 300 (5 minutes)",
+          "order": 9
+        }
+      }
+    },
+    "chatParticipants": [
+      {
+        "id": "sora-segment-validator",
+        "name": "Sora Segment Validator",
+        "description": "Validates and corrects video segment inconsistencies before generation",
+        "fullName": "Sora Segment Validator",
+        "commands": [
+          {
+            "name": "show-issue",
+            "description": "Show details of a validation issue"
+          },
+          {
+            "name": "fix-segment",
+            "description": "Apply suggested fix to segment"
+          },
+          {
+            "name": "apply-and-continue",
+            "description": "Apply all fixes and resume video production"
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package",
+    "package:preview": "vsce package --pre-release",
+    "deploy": "./deploy.sh"
+  },
+  "devDependencies": {
+    "@types/fluent-ffmpeg": "^2.1.26",
+    "@types/node": "^20.17.10",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.4.1",
+    "esbuild": "^0.19.12",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@vscode/codicons": "^0.0.41",
+    "@vscode/webview-ui-toolkit": "^1.4.0",
+    "axios": "^1.7.9",
+    "fluent-ffmpeg": "^2.1.3",
+    "openai": "^6.5.0"
+  }
+}

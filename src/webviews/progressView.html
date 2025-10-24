@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sora Progress</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 12px;
+            font-family: var(--vscode-font-family);
+            background-color: var(--vscode-panel-background);
+            color: var(--vscode-panel-foreground);
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .progress-container {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .task-tree {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .task-item {
+            margin: 2px 0;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+
+        .task-item:hover {
+            background-color: var(--vscode-list-hoverBackground);
+        }
+
+        .task-item.running {
+            background-color: var(--vscode-charts-blue);
+            color: var(--vscode-charts-blue-foreground);
+        }
+
+        .task-item.success {
+            background-color: var(--vscode-charts-green);
+            color: var(--vscode-charts-green-foreground);
+        }
+
+        .task-item.failed {
+            background-color: var(--vscode-charts-red);
+            color: var(--vscode-charts-red-foreground);
+        }
+
+        .task-item.pending {
+            background-color: var(--vscode-charts-yellow);
+            color: var(--vscode-charts-yellow-foreground);
+        }
+
+        .task-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .task-icon {
+            font-size: 14px;
+            width: 16px;
+            text-align: center;
+        }
+
+        .task-name {
+            flex: 1;
+            font-weight: 500;
+        }
+
+        .task-status {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            text-transform: uppercase;
+            font-weight: bold;
+        }
+
+        .task-status.running {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .task-status.success {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .task-status.failed {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .task-status.pending {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .task-message {
+            margin-left: 24px;
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            margin-top: 2px;
+        }
+
+        .task-children {
+            margin-left: 16px;
+            border-left: 1px solid var(--vscode-panel-border);
+            padding-left: 8px;
+        }
+
+        .spinner {
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { content: '⠋'; }
+            12.5% { content: '⠙'; }
+            25% { content: '⠹'; }
+            37.5% { content: '⠸'; }
+            50% { content: '⠼'; }
+            62.5% { content: '⠴'; }
+            75% { content: '⠦'; }
+            87.5% { content: '⠧'; }
+            100% { content: '⠋'; }
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 20px;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .empty-state h3 {
+            margin: 0 0 8px 0;
+            color: var(--vscode-foreground);
+        }
+
+        .task-timestamp {
+            font-size: 10px;
+            color: var(--vscode-descriptionForeground);
+            margin-left: 24px;
+        }
+
+        .collapsed {
+            display: none;
+        }
+
+        .expand-toggle {
+            cursor: pointer;
+            user-select: none;
+            margin-right: 4px;
+        }
+
+        .expand-toggle::before {
+            content: '▶';
+            display: inline-block;
+            transition: transform 0.2s ease;
+        }
+
+        .expand-toggle.expanded::before {
+            transform: rotate(90deg);
+        }
+    </style>
+</head>
+<body>
+    <div class="progress-container">
+        <div id="taskTree" class="task-tree">
+            <div class="empty-state">
+                <h3>No Active Tasks</h3>
+                <p>Background processing will appear here</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class ProgressView {
+            constructor() {
+                this.tasks = new Map();
+                this.container = document.getElementById('taskTree');
+                this.emptyState = this.container.querySelector('.empty-state');
+            }
+
+            addTask(id, name, parentId = null) {
+                const task = {
+                    id,
+                    name,
+                    parentId,
+                    status: 'pending',
+                    message: '',
+                    startTime: Date.now(),
+                    endTime: null,
+                    children: []
+                };
+
+                this.tasks.set(id, task);
+
+                if (parentId) {
+                    const parent = this.tasks.get(parentId);
+                    if (parent) {
+                        parent.children.push(task);
+                    }
+                }
+
+                this.render();
+                this.scrollToActive();
+            }
+
+            updateTask(id, status, message = '') {
+                const task = this.tasks.get(id);
+                if (!task) return;
+
+                task.status = status;
+                task.message = message;
+
+                if (status === 'success' || status === 'failed') {
+                    task.endTime = Date.now();
+                }
+
+                this.render();
+                this.scrollToActive();
+            }
+
+            completeTask(id) {
+                this.updateTask(id, 'success');
+                
+                // Auto-collapse only successful tasks after 5 seconds
+                setTimeout(() => {
+                    this.collapseTask(id);
+                }, 5000);
+            }
+
+            failTask(id, error) {
+                this.updateTask(id, 'failed', error);
+            }
+
+            collapseTask(id) {
+                const task = this.tasks.get(id);
+                if (!task) return;
+
+                const element = document.querySelector(`[data-task-id="${id}"]`);
+                if (element) {
+                    element.classList.add('collapsed');
+                }
+            }
+
+            expandTask(id) {
+                const task = this.tasks.get(id);
+                if (!task) return;
+
+                const element = document.querySelector(`[data-task-id="${id}"]`);
+                if (element) {
+                    element.classList.remove('collapsed');
+                }
+            }
+
+            scrollToActive() {
+                const activeTask = document.querySelector('.task-item.running');
+                if (activeTask) {
+                    activeTask.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }
+
+            render() {
+                if (this.tasks.size === 0) {
+                    this.container.innerHTML = `
+                        <div class="empty-state">
+                            <h3>No Active Tasks</h3>
+                            <p>Background processing will appear here</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Hide empty state
+                this.emptyState.style.display = 'none';
+
+                // Find root tasks (no parent)
+                const rootTasks = Array.from(this.tasks.values()).filter(task => !task.parentId);
+                
+                this.container.innerHTML = '';
+                rootTasks.forEach(task => {
+                    this.renderTask(task, 0);
+                });
+            }
+
+            renderTask(task, depth) {
+                const taskElement = document.createElement('li');
+                taskElement.className = `task-item ${task.status}`;
+                taskElement.setAttribute('data-task-id', task.id);
+
+                const hasChildren = task.children.length > 0;
+                // Keep failed tasks expanded, auto-collapse only successful tasks
+                const isExpanded = task.status === 'running' || task.status === 'pending' || task.status === 'failed';
+
+                let html = `
+                    <div class="task-header">
+                        ${hasChildren ? `<span class="expand-toggle ${isExpanded ? 'expanded' : ''}"></span>` : '<span style="width: 16px;"></span>'}
+                        <span class="task-icon">${this.getTaskIcon(task)}</span>
+                        <span class="task-name">${task.name}</span>
+                        <span class="task-status ${task.status}">${task.status}</span>
+                    </div>
+                `;
+
+                if (task.message) {
+                    html += `<div class="task-message">${task.message}</div>`;
+                }
+
+                if (task.endTime) {
+                    const duration = Math.round((task.endTime - task.startTime) / 1000);
+                    html += `<div class="task-timestamp">Completed in ${duration}s</div>`;
+                }
+
+                taskElement.innerHTML = html;
+
+                // Add click handler for expand/collapse
+                const expandToggle = taskElement.querySelector('.expand-toggle');
+                if (expandToggle) {
+                    expandToggle.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.toggleTask(task.id);
+                    });
+                }
+
+                this.container.appendChild(taskElement);
+
+                // Render children if expanded
+                if (hasChildren && isExpanded) {
+                    const childrenContainer = document.createElement('ul');
+                    childrenContainer.className = 'task-children';
+                    
+                    task.children.forEach(child => {
+                        const childElement = this.renderTask(child, depth + 1);
+                        childrenContainer.appendChild(childElement);
+                    });
+
+                    this.container.appendChild(childrenContainer);
+                }
+
+                return taskElement;
+            }
+
+            toggleTask(id) {
+                const task = this.tasks.get(id);
+                if (!task || task.children.length === 0) return;
+
+                const element = document.querySelector(`[data-task-id="${id}"]`);
+                const expandToggle = element.querySelector('.expand-toggle');
+                const childrenContainer = element.nextElementSibling;
+
+                if (childrenContainer && childrenContainer.classList.contains('task-children')) {
+                    if (childrenContainer.style.display === 'none') {
+                        childrenContainer.style.display = 'block';
+                        expandToggle.classList.add('expanded');
+                    } else {
+                        childrenContainer.style.display = 'none';
+                        expandToggle.classList.remove('expanded');
+                    }
+                }
+            }
+
+            getTaskIcon(task) {
+                switch (task.status) {
+                    case 'running':
+                        return '<span class="spinner">⠋</span>';
+                    case 'success':
+                        return '✅';
+                    case 'failed':
+                        return '❌';
+                    case 'pending':
+                        return '⏸️';
+                    default:
+                        return '📝';
+                }
+            }
+
+            clear() {
+                this.tasks.clear();
+                this.render();
+            }
+        }
+
+        // Initialize progress view
+        const progressView = new ProgressView();
+
+        // Listen for messages from extension
+        window.addEventListener('message', event => {
+            const message = event.data;
+            
+            switch (message.type) {
+                case 'addTask':
+                    progressView.addTask(message.task.id, message.task.name, message.task.parentId);
+                    break;
+                case 'updateTask':
+                    progressView.updateTask(message.taskId, message.status, message.message);
+                    break;
+                case 'completeTask':
+                    progressView.completeTask(message.taskId);
+                    break;
+                case 'failTask':
+                    progressView.failTask(message.taskId, message.error);
+                    break;
+                case 'clear':
+                    progressView.clear();
+                    break;
+            }
+        });
+
+        // Export for testing
+        window.progressView = progressView;
+    </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

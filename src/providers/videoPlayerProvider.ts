@@ -1,0 +1,761 @@
+import * as vscode from 'vscode';
+import { VideoService } from '../services/videoService';
+import { logger } from '../utils/logger';
+import * as fs from 'fs';
+import * as path from 'path';
+
+export class VideoPlayerProvider implements vscode.CustomTextEditorProvider {
+    public static readonly viewType = 'sora.videoPlayer';
+
+    constructor(
+        private readonly context: vscode.ExtensionContext,
+        private readonly videoService: VideoService
+    ) {}
+
+    public static register(context: vscode.ExtensionContext, videoService: VideoService): vscode.Disposable {
+        const provider = new VideoPlayerProvider(context, videoService);
+        return vscode.window.registerCustomEditorProvider(
+            VideoPlayerProvider.viewType,
+            provider,
+            {
+                supportsMultipleEditorsPerDocument: false
+            }
+        );
+    }
+
+    public async resolveCustomTextEditor(
+        document: vscode.TextDocument,
+        webviewPanel: vscode.WebviewPanel,
+        _token: vscode.CancellationToken
+    ): Promise<void> {
+        // Set up webview
+        webviewPanel.webview.options = {
+            enableScripts: true,
+            localResourceRoots: [this.context.extensionUri]
+        };
+
+        webviewPanel.webview.html = this.getHtmlForWebview(webviewPanel.webview);
+
+        // Load video file data
+        try {
+            const videoData = await this.loadVideoData(document.uri);
+            webviewPanel.webview.postMessage({
+                type: 'loadVideo',
+                videoData: videoData
+            });
+        } catch (error) {
+            logger.error('Failed to load video data:', error);
+            webviewPanel.webview.postMessage({
+                type: 'loadVideo',
+                videoData: {
+                    error: `Failed to load video file: ${error}`
+                }
+            });
+        }
+
+        // Handle messages from webview
+        webviewPanel.webview.onDidReceiveMessage(
+            message => {
+                switch (message.type) {
+                    case 'openStory':
+                        this.openStory(message.storyId);
+                        break;
+                }
+            },
+            undefined,
+            this.context.subscriptions
+        );
+    }
+
+    private async loadVideoData(uri: vscode.Uri): Promise<any> {
+        const filePath = uri.fsPath;
+        const stats = fs.statSync(filePath);
+        const filename = path.basename(filePath);
+        const ext = path.extname(filePath).toLowerCase();
+
+        // Get video metadata using VideoService
+        let videoAnalysis;
+        try {
+            videoAnalysis = await this.videoService.getMetadata(filePath);
+        } catch (error) {
+            logger.warn('Failed to get video metadata:', error);
+        }
+
+        // Determine if this is part of a story
+        const storyId = this.extractStoryIdFromPath(filePath);
+
+        // Extract video and audio streams from metadata
+        const videoStream = videoAnalysis?.streams?.find((s: any) => s.codec_type === 'video');
+        const audioStream = videoAnalysis?.streams?.find((s: any) => s.codec_type === 'audio');
+
+        return {
+            src: uri.toString(),
+            filename: filename,
+            size: this.formatFileSize(stats.size),
+            format: ext.substring(1).toUpperCase(),
+            duration: videoAnalysis ? this.formatDuration(videoAnalysis.format?.duration || 0) : 'Unknown',
+            resolution: videoStream ? `${videoStream.width}x${videoStream.height}` : 'Unknown',
+            frameRate: videoStream ? `${videoStream.r_frame_rate} fps` : 'Unknown',
+            bitrate: videoAnalysis?.format?.bit_rate ? `${Math.round(parseInt(videoAnalysis.format.bit_rate) / 1000)} kbps` : 'Unknown',
+            codec: videoStream?.codec_name || 'Unknown',
+            audioCodec: audioStream?.codec_name || 'Unknown',
+            sampleRate: audioStream?.sample_rate ? `${audioStream.sample_rate} Hz` : 'Unknown',
+            channels: audioStream?.channels || 'Unknown',
+            audioBitrate: audioStream?.bit_rate ? `${Math.round(parseInt(audioStream.bit_rate) / 1000)} kbps` : 'Unknown',
+            createdAt: stats.birthtime.toLocaleDateString(),
+            modifiedAt: stats.mtime.toLocaleDateString(),
+            storyId: storyId
+        };
+    }
+
+    private extractStoryIdFromPath(filePath: string): string | undefined {
+        // Look for story ID in path like: /path/to/stories/story_123/segments/video.mp4
+        const match = filePath.match(/stories\/story_([^\/]+)\//);
+        return match ? match[1] : undefined;
+    }
+
+    private formatFileSize(bytes: number): string {
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        if (bytes === 0) return '0 B';
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`;
+    }
+
+    private formatDuration(seconds: number): string {
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    private openStory(storyId: string): void {
+        vscode.commands.executeCommand('sora.openStory', storyId);
+    }
+
+    private getHtmlForWebview(webview: vscode.Webview): string {
+        return `
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Video Player</title>
+                <style>
+                    body {
+                        font-family: var(--vscode-font-family);
+                        font-size: var(--vscode-font-size);
+                        color: var(--vscode-foreground);
+                        background-color: var(--vscode-editor-background);
+                        margin: 0;
+                        padding: 0;
+                        line-height: 1.6;
+                    }
+                    .video-container {
+                        position: relative;
+                        width: 100%;
+                        background-color: #000;
+                        border-radius: 8px;
+                        overflow: hidden;
+                        margin-bottom: 20px;
+                    }
+                    .video-player {
+                        width: 100%;
+                        height: auto;
+                        display: block;
+                    }
+                    .controls-overlay {
+                        position: absolute;
+                        bottom: 0;
+                        left: 0;
+                        right: 0;
+                        background: linear-gradient(transparent, rgba(0,0,0,0.7));
+                        padding: 20px;
+                        opacity: 0;
+                        transition: opacity 0.3s;
+                    }
+                    .video-container:hover .controls-overlay {
+                        opacity: 1;
+                    }
+                    .progress-container {
+                        position: relative;
+                        height: 6px;
+                        background-color: rgba(255,255,255,0.3);
+                        border-radius: 3px;
+                        cursor: pointer;
+                        margin-bottom: 15px;
+                    }
+                    .progress-bar {
+                        height: 100%;
+                        background-color: var(--vscode-button-background);
+                        border-radius: 3px;
+                        transition: width 0.1s;
+                    }
+                    .progress-handle {
+                        position: absolute;
+                        top: 50%;
+                        right: -8px;
+                        width: 16px;
+                        height: 16px;
+                        background-color: var(--vscode-button-background);
+                        border-radius: 50%;
+                        transform: translateY(-50%);
+                        cursor: pointer;
+                        opacity: 0;
+                        transition: opacity 0.2s;
+                    }
+                    .progress-container:hover .progress-handle {
+                        opacity: 1;
+                    }
+                    .controls-row {
+                        display: flex;
+                        align-items: center;
+                        gap: 15px;
+                        margin-bottom: 10px;
+                    }
+                    .play-button {
+                        width: 50px;
+                        height: 50px;
+                        border-radius: 50%;
+                        border: none;
+                        background-color: var(--vscode-button-background);
+                        color: var(--vscode-button-foreground);
+                        font-size: 20px;
+                        cursor: pointer;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        transition: all 0.2s;
+                    }
+                    .play-button:hover {
+                        background-color: var(--vscode-button-hoverBackground);
+                    }
+                    .time-display {
+                        font-family: monospace;
+                        font-size: 14px;
+                        color: white;
+                        min-width: 100px;
+                    }
+                    .volume-container {
+                        display: flex;
+                        align-items: center;
+                        gap: 10px;
+                    }
+                    .volume-slider {
+                        width: 100px;
+                        height: 4px;
+                        background-color: rgba(255,255,255,0.3);
+                        border-radius: 2px;
+                        cursor: pointer;
+                        position: relative;
+                    }
+                    .volume-fill {
+                        height: 100%;
+                        background-color: var(--vscode-button-background);
+                        border-radius: 2px;
+                        transition: width 0.1s;
+                    }
+                    .speed-selector {
+                        padding: 5px 10px;
+                        border: 1px solid rgba(255,255,255,0.3);
+                        border-radius: 4px;
+                        background-color: rgba(0,0,0,0.5);
+                        color: white;
+                        font-size: 12px;
+                    }
+                    .quality-selector {
+                        padding: 5px 10px;
+                        border: 1px solid rgba(255,255,255,0.3);
+                        border-radius: 4px;
+                        background-color: rgba(0,0,0,0.5);
+                        color: white;
+                        font-size: 12px;
+                    }
+                    .control-buttons {
+                        display: flex;
+                        gap: 10px;
+                        margin-left: auto;
+                    }
+                    .control-btn {
+                        width: 40px;
+                        height: 40px;
+                        border-radius: 50%;
+                        border: none;
+                        background-color: rgba(0,0,0,0.5);
+                        color: white;
+                        cursor: pointer;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        font-size: 16px;
+                        transition: all 0.2s;
+                    }
+                    .control-btn:hover {
+                        background-color: rgba(0,0,0,0.8);
+                    }
+                    .control-btn.active {
+                        background-color: var(--vscode-button-background);
+                    }
+                    .metadata {
+                        display: grid;
+                        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                        gap: 20px;
+                        margin-bottom: 30px;
+                    }
+                    .metadata-section {
+                        background-color: var(--vscode-panel-background);
+                        padding: 15px;
+                        border-radius: 6px;
+                    }
+                    .metadata-section h3 {
+                        margin: 0 0 10px 0;
+                        color: var(--vscode-foreground);
+                        font-size: 14px;
+                    }
+                    .metadata-item {
+                        display: flex;
+                        justify-content: space-between;
+                        margin-bottom: 5px;
+                        font-size: 12px;
+                    }
+                    .metadata-label {
+                        color: var(--vscode-descriptionForeground);
+                    }
+                    .metadata-value {
+                        color: var(--vscode-foreground);
+                        font-weight: 500;
+                    }
+                    .story-info {
+                        background-color: var(--vscode-panel-background);
+                        padding: 15px;
+                        border-radius: 6px;
+                        margin-top: 20px;
+                    }
+                    .story-info h3 {
+                        margin: 0 0 10px 0;
+                        color: var(--vscode-foreground);
+                        font-size: 14px;
+                    }
+                    .story-link {
+                        color: var(--vscode-button-background);
+                        text-decoration: none;
+                        cursor: pointer;
+                    }
+                    .story-link:hover {
+                        text-decoration: underline;
+                    }
+                    .loading {
+                        text-align: center;
+                        color: var(--vscode-descriptionForeground);
+                        font-style: italic;
+                        padding: 40px;
+                    }
+                    .error {
+                        color: var(--vscode-errorForeground);
+                        background-color: var(--vscode-inputValidation-errorBackground);
+                        padding: 10px;
+                        border-radius: 4px;
+                        margin-bottom: 20px;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="loading" id="loadingIndicator">Loading video file...</div>
+
+                <div class="video-container" id="videoContainer">
+                    <video id="videoPlayer" class="video-player" preload="metadata">
+                        Your browser does not support the video element.
+                    </video>
+
+                    <div class="controls-overlay" id="controlsOverlay">
+                        <div class="progress-container" id="progressContainer">
+                            <div class="progress-bar" id="progressBar"></div>
+                            <div class="progress-handle" id="progressHandle"></div>
+                        </div>
+
+                        <div class="controls-row">
+                            <button class="play-button" id="playButton">
+                                <span id="playIcon">▶</span>
+                            </button>
+
+                            <div class="time-display">
+                                <span id="currentTime">0:00</span> / <span id="duration">0:00</span>
+                            </div>
+
+                            <div class="volume-container">
+                                <span id="volumeIcon">🔊</span>
+                                <div class="volume-slider" id="volumeSlider">
+                                    <div class="volume-fill" id="volumeFill"></div>
+                                </div>
+                                <span id="volumeValue">100%</span>
+                            </div>
+
+                            <select class="speed-selector" id="speedSelector">
+                                <option value="0.25">0.25x</option>
+                                <option value="0.5">0.5x</option>
+                                <option value="0.75">0.75x</option>
+                                <option value="1" selected>1x</option>
+                                <option value="1.25">1.25x</option>
+                                <option value="1.5">1.5x</option>
+                                <option value="2">2x</option>
+                            </select>
+
+                            <select class="quality-selector" id="qualitySelector">
+                                <option value="auto">Auto</option>
+                                <option value="1080p">1080p</option>
+                                <option value="720p">720p</option>
+                                <option value="480p">480p</option>
+                                <option value="360p">360p</option>
+                            </select>
+
+                            <div class="control-buttons">
+                                <button class="control-btn" id="loopBtn" title="Loop">🔁</button>
+                                <button class="control-btn" id="autoplayBtn" title="Autoplay">▶️</button>
+                                <button class="control-btn" id="pipBtn" title="Picture-in-Picture">📺</button>
+                                <button class="control-btn" id="fullscreenBtn" title="Fullscreen">⛶</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="metadata">
+                    <div class="metadata-section">
+                        <h3>File Information</h3>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Filename:</span>
+                            <span class="metadata-value" id="fileNameValue">-</span>
+                        </div>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Size:</span>
+                            <span class="metadata-value" id="fileSize">-</span>
+                        </div>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Duration:</span>
+                            <span class="metadata-value" id="fileDuration">-</span>
+                        </div>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Format:</span>
+                            <span class="metadata-value" id="fileFormat">-</span>
+                        </div>
+                    </div>
+
+                    <div class="metadata-section">
+                        <h3>Video Properties</h3>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Resolution:</span>
+                            <span class="metadata-value" id="resolution">-</span>
+                        </div>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Frame Rate:</span>
+                            <span class="metadata-value" id="frameRate">-</span>
+                        </div>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Bitrate:</span>
+                            <span class="metadata-value" id="bitrate">-</span>
+                        </div>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Codec:</span>
+                            <span class="metadata-value" id="codec">-</span>
+                        </div>
+                    </div>
+
+                    <div class="metadata-section">
+                        <h3>Audio Properties</h3>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Audio Codec:</span>
+                            <span class="metadata-value" id="audioCodec">-</span>
+                        </div>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Sample Rate:</span>
+                            <span class="metadata-value" id="sampleRate">-</span>
+                        </div>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Channels:</span>
+                            <span class="metadata-value" id="channels">-</span>
+                        </div>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Audio Bitrate:</span>
+                            <span class="metadata-value" id="audioBitrate">-</span>
+                        </div>
+                    </div>
+
+                    <div class="metadata-section">
+                        <h3>Timestamps</h3>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Created:</span>
+                            <span class="metadata-value" id="createdAt">-</span>
+                        </div>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Modified:</span>
+                            <span class="metadata-value" id="modifiedAt">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="story-info" id="storyInfo" style="display: none;">
+                    <h3>Related Story</h3>
+                    <p>This video is part of: <a class="story-link" id="storyLink">Story Name</a></p>
+                </div>
+
+                <script>
+                    const vscode = acquireVsCodeApi();
+                    const videoPlayer = document.getElementById('videoPlayer');
+                    const playButton = document.getElementById('playButton');
+                    const playIcon = document.getElementById('playIcon');
+                    const currentTimeEl = document.getElementById('currentTime');
+                    const durationEl = document.getElementById('duration');
+                    const progressContainer = document.getElementById('progressContainer');
+                    const progressBar = document.getElementById('progressBar');
+                    const progressHandle = document.getElementById('progressHandle');
+                    const volumeSlider = document.getElementById('volumeSlider');
+                    const volumeFill = document.getElementById('volumeFill');
+                    const volumeValue = document.getElementById('volumeValue');
+                    const volumeIcon = document.getElementById('volumeIcon');
+                    const speedSelector = document.getElementById('speedSelector');
+                    const qualitySelector = document.getElementById('qualitySelector');
+                    const loopBtn = document.getElementById('loopBtn');
+                    const autoplayBtn = document.getElementById('autoplayBtn');
+                    const pipBtn = document.getElementById('pipBtn');
+                    const fullscreenBtn = document.getElementById('fullscreenBtn');
+                    const videoContainer = document.getElementById('videoContainer');
+
+                    let isPlaying = false;
+                    let isDragging = false;
+                    let isFullscreen = false;
+                    let isPipSupported = false;
+
+                    // Check for Picture-in-Picture support
+                    if (document.pictureInPictureEnabled) {
+                        isPipSupported = true;
+                        pipBtn.style.display = 'block';
+                    }
+
+                    // Load video file
+                    window.addEventListener('message', event => {
+                        const message = event.data;
+                        switch (message.type) {
+                            case 'loadVideo':
+                                loadVideoFile(message.videoData);
+                                break;
+                        }
+                    });
+
+                    function loadVideoFile(videoData) {
+                        try {
+                            document.getElementById('loadingIndicator').style.display = 'none';
+                            
+                            // Set video source
+                            videoPlayer.src = videoData.src;
+                            
+                            // Update metadata
+                            document.getElementById('fileNameValue').textContent = videoData.filename || '-';
+                            document.getElementById('fileSize').textContent = videoData.size || '-';
+                            document.getElementById('fileFormat').textContent = videoData.format || '-';
+                            document.getElementById('resolution').textContent = videoData.resolution || '-';
+                            document.getElementById('frameRate').textContent = videoData.frameRate || '-';
+                            document.getElementById('bitrate').textContent = videoData.bitrate || '-';
+                            document.getElementById('codec').textContent = videoData.codec || '-';
+                            document.getElementById('audioCodec').textContent = videoData.audioCodec || '-';
+                            document.getElementById('sampleRate').textContent = videoData.sampleRate || '-';
+                            document.getElementById('channels').textContent = videoData.channels || '-';
+                            document.getElementById('audioBitrate').textContent = videoData.audioBitrate || '-';
+                            document.getElementById('createdAt').textContent = videoData.createdAt || '-';
+                            document.getElementById('modifiedAt').textContent = videoData.modifiedAt || '-';
+                            
+                            // Show story info if available
+                            if (videoData.storyId) {
+                                document.getElementById('storyInfo').style.display = 'block';
+                                document.getElementById('storyLink').textContent = \`Story \${videoData.storyId}\`;
+                                document.getElementById('storyLink').onclick = () => {
+                                    vscode.postMessage({
+                                        type: 'openStory',
+                                        storyId: videoData.storyId
+                                    });
+                                };
+                            }
+                            
+                        } catch (error) {
+                            console.error('Failed to load video file:', error);
+                            document.getElementById('loadingIndicator').innerHTML = 
+                                '<div class="error">Failed to load video file: ' + error.message + '</div>';
+                        }
+                    }
+
+                    // Play/Pause functionality
+                    playButton.addEventListener('click', () => {
+                        if (isPlaying) {
+                            videoPlayer.pause();
+                        } else {
+                            videoPlayer.play();
+                        }
+                    });
+
+                    videoPlayer.addEventListener('play', () => {
+                        isPlaying = true;
+                        playIcon.textContent = '⏸';
+                    });
+
+                    videoPlayer.addEventListener('pause', () => {
+                        isPlaying = false;
+                        playIcon.textContent = '▶';
+                    });
+
+                    videoPlayer.addEventListener('ended', () => {
+                        isPlaying = false;
+                        playIcon.textContent = '▶';
+                        if (!loopBtn.classList.contains('active')) {
+                            videoPlayer.currentTime = 0;
+                        }
+                    });
+
+                    // Time updates
+                    videoPlayer.addEventListener('timeupdate', () => {
+                        if (!isDragging) {
+                            updateProgress();
+                            updateTimeDisplay();
+                        }
+                    });
+
+                    videoPlayer.addEventListener('loadedmetadata', () => {
+                        updateTimeDisplay();
+                        document.getElementById('fileDuration').textContent = formatTime(videoPlayer.duration);
+                    });
+
+                    function updateTimeDisplay() {
+                        currentTimeEl.textContent = formatTime(videoPlayer.currentTime);
+                        durationEl.textContent = formatTime(videoPlayer.duration);
+                    }
+
+                    function formatTime(seconds) {
+                        if (isNaN(seconds)) return '0:00';
+                        const mins = Math.floor(seconds / 60);
+                        const secs = Math.floor(seconds % 60);
+                        return \`\${mins}:\${secs.toString().padStart(2, '0')}\`;
+                    }
+
+                    // Progress bar
+                    function updateProgress() {
+                        if (videoPlayer.duration) {
+                            const progress = (videoPlayer.currentTime / videoPlayer.duration) * 100;
+                            progressBar.style.width = \`\${progress}%\`;
+                            progressHandle.style.left = \`\${progress}%\`;
+                        }
+                    }
+
+                    progressContainer.addEventListener('click', (e) => {
+                        if (videoPlayer.duration) {
+                            const rect = progressContainer.getBoundingClientRect();
+                            const clickX = e.clientX - rect.left;
+                            const percentage = clickX / rect.width;
+                            videoPlayer.currentTime = percentage * videoPlayer.duration;
+                        }
+                    });
+
+                    // Volume control
+                    function updateVolume() {
+                        const rect = volumeSlider.getBoundingClientRect();
+                        const clickX = event.clientX - rect.left;
+                        const percentage = Math.max(0, Math.min(1, clickX / rect.width));
+                        videoPlayer.volume = percentage;
+                        videoPlayer.muted = false;
+                        volumeFill.style.width = \`\${percentage * 100}%\`;
+                        volumeValue.textContent = \`\${Math.round(percentage * 100)}%\`;
+                        volumeIcon.textContent = percentage > 0 ? '🔊' : '🔇';
+                    }
+
+                    volumeSlider.addEventListener('click', updateVolume);
+
+                    videoPlayer.addEventListener('volumechange', () => {
+                        const percentage = videoPlayer.muted ? 0 : videoPlayer.volume;
+                        volumeFill.style.width = \`\${percentage * 100}%\`;
+                        volumeValue.textContent = \`\${Math.round(percentage * 100)}%\`;
+                        volumeIcon.textContent = videoPlayer.muted ? '🔇' : (percentage > 0.5 ? '🔊' : '🔉');
+                    });
+
+                    // Speed control
+                    speedSelector.addEventListener('change', () => {
+                        videoPlayer.playbackRate = parseFloat(speedSelector.value);
+                    });
+
+                    // Loop control
+                    loopBtn.addEventListener('click', () => {
+                        loopBtn.classList.toggle('active');
+                        videoPlayer.loop = loopBtn.classList.contains('active');
+                    });
+
+                    // Autoplay control
+                    autoplayBtn.addEventListener('click', () => {
+                        autoplayBtn.classList.toggle('active');
+                        videoPlayer.autoplay = autoplayBtn.classList.contains('active');
+                    });
+
+                    // Picture-in-Picture
+                    pipBtn.addEventListener('click', async () => {
+                        if (isPipSupported) {
+                            try {
+                                if (document.pictureInPictureElement) {
+                                    await document.exitPictureInPicture();
+                                } else {
+                                    await videoPlayer.requestPictureInPicture();
+                                }
+                            } catch (error) {
+                                console.error('Picture-in-Picture failed:', error);
+                            }
+                        }
+                    });
+
+                    // Fullscreen
+                    fullscreenBtn.addEventListener('click', () => {
+                        if (!isFullscreen) {
+                            if (videoContainer.requestFullscreen) {
+                                videoContainer.requestFullscreen();
+                            } else if (videoContainer.webkitRequestFullscreen) {
+                                videoContainer.webkitRequestFullscreen();
+                            } else if (videoContainer.msRequestFullscreen) {
+                                videoContainer.msRequestFullscreen();
+                            }
+                        } else {
+                            if (document.exitFullscreen) {
+                                document.exitFullscreen();
+                            } else if (document.webkitExitFullscreen) {
+                                document.webkitExitFullscreen();
+                            } else if (document.msExitFullscreen) {
+                                document.msExitFullscreen();
+                            }
+                        }
+                    });
+
+                    // Fullscreen change events
+                    document.addEventListener('fullscreenchange', () => {
+                        isFullscreen = !!document.fullscreenElement;
+                        fullscreenBtn.textContent = isFullscreen ? '⛶' : '⛶';
+                    });
+
+                    // Keyboard shortcuts
+                    document.addEventListener('keydown', (e) => {
+                        if (e.code === 'Space') {
+                            e.preventDefault();
+                            playButton.click();
+                        } else if (e.code === 'ArrowLeft') {
+                            e.preventDefault();
+                            videoPlayer.currentTime = Math.max(0, videoPlayer.currentTime - 10);
+                        } else if (e.code === 'ArrowRight') {
+                            e.preventDefault();
+                            videoPlayer.currentTime = Math.min(videoPlayer.duration, videoPlayer.currentTime + 10);
+                        } else if (e.code === 'KeyM') {
+                            e.preventDefault();
+                            videoPlayer.muted = !videoPlayer.muted;
+                        } else if (e.code === 'KeyF') {
+                            e.preventDefault();
+                            fullscreenBtn.click();
+                        }
+                    });
+
+                    // Request video data on load
+                    vscode.postMessage({
+                        type: 'requestVideoData'
+                    });
+                </script>
+            </body>
+            </html>
+        `;
+    }
+}
