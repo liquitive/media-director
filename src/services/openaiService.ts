@@ -599,48 +599,54 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
         try {
             let buffer: Buffer;
             
-            // Try API method first
+            // If no URL provided, retrieve the video to get the download URL
             if (!videoUrl) {
-                logger.info(`Downloading video ${videoId} via API...`);
-                const content = await ((this.client as any).videos as any).content(videoId);
-                buffer = Buffer.from(await content.arrayBuffer());
-            } else {
-                // Fallback to direct URL download with authentication
-                logger.info(`Downloading video from URL: ${videoUrl}`);
-                const https = require('https');
-                const http = require('http');
-                const { URL } = require('url');
+                logger.info(`Retrieving video ${videoId} to get download URL...`);
+                const video = await (this.client as any).videos.retrieve(videoId);
+                videoUrl = video.output_url || video.url || video.file_url;
                 
-                const parsedUrl = new URL(videoUrl);
-                const protocol = videoUrl.startsWith('https') ? https : http;
+                if (!videoUrl) {
+                    throw new Error(`No download URL found for video ${videoId}. Video status: ${video.status}`);
+                }
                 
-                const options = {
-                    hostname: parsedUrl.hostname,
-                    path: parsedUrl.pathname + parsedUrl.search,
-                    method: 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${this.apiKey}`,
-                        'Content-Type': 'application/octet-stream'
-                    }
-                };
-                
-                buffer = await new Promise<Buffer>((resolve, reject) => {
-                    const request = protocol.request(options, (response: any) => {
-                        if (response.statusCode !== 200) {
-                            reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
-                            return;
-                        }
-                        
-                        const chunks: Buffer[] = [];
-                        response.on('data', (chunk: Buffer) => chunks.push(chunk));
-                        response.on('end', () => resolve(Buffer.concat(chunks)));
-                        response.on('error', reject);
-                    });
-                    
-                    request.on('error', reject);
-                    request.end();
-                });
+                logger.info(`Got download URL from video object: ${videoUrl}`);
             }
+            
+            // Download from URL with authentication
+            logger.info(`Downloading video from URL: ${videoUrl}`);
+            const https = require('https');
+            const http = require('http');
+            const { URL } = require('url');
+            
+            const parsedUrl = new URL(videoUrl);
+            const protocol = videoUrl.startsWith('https') ? https : http;
+            
+            const options = {
+                hostname: parsedUrl.hostname,
+                path: parsedUrl.pathname + parsedUrl.search,
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/octet-stream'
+                }
+            };
+            
+            buffer = await new Promise<Buffer>((resolve, reject) => {
+                const request = protocol.request(options, (response: any) => {
+                    if (response.statusCode !== 200) {
+                        reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
+                        return;
+                    }
+                    
+                    const chunks: Buffer[] = [];
+                    response.on('data', (chunk: Buffer) => chunks.push(chunk));
+                    response.on('end', () => resolve(Buffer.concat(chunks)));
+                    response.on('error', reject);
+                });
+                
+                request.on('error', reject);
+                request.end();
+            });
             
             // Ensure directory exists
             const dir = require('path').dirname(outputPath);
