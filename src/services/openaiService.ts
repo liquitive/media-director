@@ -454,7 +454,16 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
     private async downloadVideoToLocal(videoId: string, videoUrl?: string, storyId?: string): Promise<string> {
         try {
             // Create local video directory structure in story segments folder
-            const videoDir = path.join(process.cwd(), 'sora-output', 'stories', storyId || 'default', 'segments');
+            // Use workspace-relative path instead of absolute path
+            const workspaceRoot = process.cwd();
+            const videoDir = path.join(workspaceRoot, 'sora-output', 'stories', storyId || 'default', 'segments');
+            
+            // Ensure parent directories exist first
+            const parentDir = path.dirname(videoDir);
+            if (!fs.existsSync(parentDir)) {
+                fs.mkdirSync(parentDir, { recursive: true });
+            }
+            
             if (!fs.existsSync(videoDir)) {
                 fs.mkdirSync(videoDir, { recursive: true });
             }
