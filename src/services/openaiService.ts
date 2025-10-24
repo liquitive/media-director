@@ -139,7 +139,7 @@ export class OpenAIService {
             // Use remix API if previous video ID is provided (for character continuity)
             if (remixVideoId) {
                 logger.info(`🎬 Using remix API for character continuity with video: ${remixVideoId}`);
-                return await this.generateVideoRemix(remixVideoId, enhancedPrompt, storyDirectoryPath);
+                return await this.generateVideoRemix(remixVideoId, enhancedPrompt, storyDirectoryPath, progressCallback);
             }
             
             // Reference images disabled: current Sora API rejects 'image' parameter.
@@ -190,7 +190,8 @@ export class OpenAIService {
     async generateVideoRemix(
         remixVideoId: string,
         prompt: string,
-        storyDirectoryPath?: string
+        storyDirectoryPath?: string,
+        progressCallback?: (progress: number, message: string) => void
     ): Promise<{ id: string; url?: string }> {
         try {
             logger.info(`🎬 Generating remix video from ${remixVideoId} with prompt: ${prompt.substring(0, 100)}...`);
@@ -204,13 +205,17 @@ export class OpenAIService {
                 prompt: prompt
             });
 
-            logger.info(`✅ Remix video created: ${response.id}`);
+            logger.info(`✅ Remix video created: ${response.id}, status: ${response.status}`);
+            
+            // Poll for completion (Sora videos take time to generate)
+            logger.info(`⏳ Polling for video completion...`);
+            const completedVideo = await this.pollVideoStatus(response.id, 60, progressCallback);
             
             // Download the video to local storage
-            const localVideoPath = await this.downloadVideoToLocal(response.id, response.url, storyDirectoryPath);
+            const localVideoPath = await this.downloadVideoToLocal(completedVideo.id, completedVideo.url, storyDirectoryPath);
             
             return {
-                id: response.id,
+                id: completedVideo.id,
                 url: localVideoPath
             };
         } catch (error: any) {
