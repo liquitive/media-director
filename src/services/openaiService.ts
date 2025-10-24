@@ -17,6 +17,16 @@ export class OpenAIService {
     }
 
     /**
+     * Map duration to Sora-supported values (4, 8, or 12 seconds)
+     */
+    private mapDurationToSoraSupported(duration: number): string {
+        if (duration <= 4) return '4';
+        if (duration <= 8) return '8';
+        if (duration <= 12) return '12';
+        return '12'; // Default to 12 for longer durations
+    }
+
+    /**
      * Get the API key for use by other services
      */
     getApiKey(): string {
@@ -33,7 +43,8 @@ export class OpenAIService {
         size: '1280x720' | '1920x1080' = '1280x720',
         storyConfig?: any,
         imagePaths?: string | string[],
-        continuityFrame?: string
+        continuityFrame?: string,
+        storyId?: string
     ): Promise<{ id: string; url?: string }> {
         try {
             logger.info(`Original prompt length: ${prompt.length} chars`);
@@ -73,7 +84,7 @@ export class OpenAIService {
                 model,
                 prompt: enhancedPrompt,
                 size: size as any,  // Type assertion for size
-                seconds: String(Math.max(1, Math.round(duration)))  // best effort seconds
+                seconds: this.mapDurationToSoraSupported(duration)  // Map to Sora-supported values
             };
             
             // Try to add continuity frame as input_reference
@@ -104,18 +115,30 @@ export class OpenAIService {
             const completedVideo = await this.generateVideoWithRetry(videoParams, 3);
             
             // Download the video to local storage
-            const localVideoPath = await this.downloadVideoToLocal(completedVideo.id, completedVideo.url);
+            const localVideoPath = await this.downloadVideoToLocal(completedVideo.id, completedVideo.url, storyId);
             
             return {
                 id: completedVideo.id,
                 url: localVideoPath // Return local path instead of API URL
             };
-        } catch (error) {
+        } catch (error: any) {
             logger.error('Error generating video segment:', error);
-            logger.error('Error stack:', (error as any)?.stack);
-            logger.error('Error message:', (error as any)?.message);
+            logger.error('Error stack:', error?.stack);
+            logger.error('Error message:', error?.message);
             logger.error('Error details:', JSON.stringify(error, null, 2));
-            throw error;
+            
+            // Provide detailed error information and stop execution
+            const errorMessage = error?.message || 'Unknown error';
+            const errorDetails = {
+                message: errorMessage,
+                duration: duration,
+                mappedDuration: this.mapDurationToSoraSupported(duration),
+                prompt: prompt.substring(0, 100) + '...',
+                storyId: storyId
+            };
+            
+            logger.error('Detailed error context:', errorDetails);
+            throw new Error(`Video generation failed: ${errorMessage}. Duration: ${duration}s -> ${this.mapDurationToSoraSupported(duration)}s. Please check your API key and Sora access.`);
         }
     }
 
@@ -408,10 +431,10 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
     /**
      * Download video to local storage with proper path structure
      */
-    private async downloadVideoToLocal(videoId: string, videoUrl?: string): Promise<string> {
+    private async downloadVideoToLocal(videoId: string, videoUrl?: string, storyId?: string): Promise<string> {
         try {
-            // Create local video directory structure
-            const videoDir = path.join(process.cwd(), 'sora-output', 'videos');
+            // Create local video directory structure in story segments folder
+            const videoDir = path.join(process.cwd(), 'sora-output', 'stories', storyId || 'default', 'segments');
             if (!fs.existsSync(videoDir)) {
                 fs.mkdirSync(videoDir, { recursive: true });
             }

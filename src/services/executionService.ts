@@ -80,7 +80,10 @@ export class ExecutionService {
                     segment.duration,
                     story.settings.model,
                     story.settings.resolution,
-                    []
+                    [],
+                    undefined, // imagePaths
+                    undefined, // continuityFrame
+                    storyId // storyId for proper path resolution
                 );
                 
                 // Update segment progress: Processing
