@@ -218,6 +218,12 @@
         "category": "Sora"
       },
       {
+        "command": "sora.openEditorsNotesPanel",
+        "title": "Open Editor's Notes Panel",
+        "category": "Sora",
+        "icon": "$(note)"
+      },
+      {
         "command": "sora.openScript",
         "title": "Open Script",
         "category": "Sora"
@@ -400,6 +406,11 @@
           "command": "sora.openStorylineEditor",
           "when": "view == soraStories && viewItem == story",
           "group": "navigation@2"
+        },
+        {
+          "command": "sora.openEditorsNotesPanel",
+          "when": "view == soraStories && viewItem == story",
+          "group": "navigation@3"
         },
         {
           "command": "sora.generateScript",

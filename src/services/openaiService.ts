@@ -64,7 +64,8 @@ export class OpenAIService {
         storyConfig?: any,
         imagePaths?: string | string[],
         continuityFrame?: string,
-        storyDirectoryPath?: string
+        storyDirectoryPath?: string,
+        remixVideoId?: string
     ): Promise<{ id: string; url?: string }> {
         try {
             logger.info(`Original prompt length: ${prompt.length} chars`);
@@ -96,6 +97,15 @@ export class OpenAIService {
                 logger.info(`🎬 Continuity mode enabled with frame: ${continuityFrame}`);
                 enhancedPrompt = `Continuing from previous scene. Maintain consistent visual style, lighting, characters, and environment. ${enhancedPrompt}`;
             }
+            
+            // Add character continuity instructions based on story assets
+            if (storyConfig?.assets) {
+                const characterContinuity = this.buildCharacterContinuityInstructions(storyConfig.assets);
+                if (characterContinuity) {
+                    enhancedPrompt = `${characterContinuity} ${enhancedPrompt}`;
+                    logger.info('🎭 Character continuity instructions added');
+                }
+            }
 
             logger.info(`About to call videos.create...`);
             
@@ -121,6 +131,12 @@ export class OpenAIService {
                 } catch (error) {
                     logger.warn('⚠️  Could not load continuity frame, using prompt-based continuity only:', error);
                 }
+            }
+            
+            // Use remix API if previous video ID is provided (for character continuity)
+            if (remixVideoId) {
+                logger.info(`🎬 Using remix API for character continuity with video: ${remixVideoId}`);
+                return await this.generateVideoRemix(remixVideoId, enhancedPrompt, storyDirectoryPath);
             }
             
             // Reference images disabled: current Sora API rejects 'image' parameter.
@@ -160,6 +176,66 @@ export class OpenAIService {
             logger.error('Detailed error context:', errorDetails);
             throw new Error(`Video generation failed: ${errorMessage}. Duration: ${duration}s -> ${this.mapDurationToSoraSupported(duration)}s. Please check your API key and Sora access.`);
         }
+    }
+
+    /**
+     * Generate video using remix API for character continuity
+     */
+    async generateVideoRemix(
+        remixVideoId: string,
+        prompt: string,
+        storyDirectoryPath?: string
+    ): Promise<{ id: string; url?: string }> {
+        try {
+            logger.info(`🎬 Generating remix video from ${remixVideoId} with prompt: ${prompt.substring(0, 100)}...`);
+            
+            if (!this.client) {
+                throw new Error('OpenAI client not initialized');
+            }
+
+            // Call the remix endpoint
+            const response = await (this.client as any).videos.remix(remixVideoId, {
+                prompt: prompt
+            });
+
+            logger.info(`✅ Remix video created: ${response.id}`);
+            
+            // Download the video to local storage
+            const localVideoPath = await this.downloadVideoToLocal(response.id, response.url, storyDirectoryPath);
+            
+            return {
+                id: response.id,
+                url: localVideoPath
+            };
+        } catch (error: any) {
+            logger.error('Error generating remix video:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Build character continuity instructions from story assets
+     */
+    private buildCharacterContinuityInstructions(assets: any[]): string {
+        const characterAssets = assets.filter(asset => asset.type === 'character');
+        
+        if (characterAssets.length === 0) {
+            return '';
+        }
+
+        const instructions = characterAssets.map(asset => {
+            const attrs = asset.visual_attributes || {};
+            const keyDetails = [
+                attrs.face ? `face: ${attrs.face}` : '',
+                attrs.hair ? `hair: ${attrs.hair}` : '',
+                attrs.clothes ? `clothing: ${attrs.clothes}` : '',
+                attrs.distinguishing_features ? `features: ${attrs.distinguishing_features}` : ''
+            ].filter(Boolean).join(', ');
+            
+            return `Maintain exact character appearance: ${asset.name} (${keyDetails})`;
+        }).join('. ');
+
+        return `CHARACTER CONTINUITY: ${instructions}. `;
     }
 
     /**

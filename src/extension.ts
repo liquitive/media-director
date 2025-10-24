@@ -101,6 +101,7 @@ export async function activate(context: vscode.ExtensionContext) {
         );
         logger.info('Storyline editor provider initialized');
 
+
         // Register commands (now both providers are available)
         registerCommands(context, {
             storyService,
@@ -316,6 +317,7 @@ function registerTreeView(context: vscode.ExtensionContext): void {
         
         logger.info('Asset tree view and commands registered');
     }
+
     
     
     // Register custom script editor

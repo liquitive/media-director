@@ -156,8 +156,9 @@ export class DirectorScriptGeneratorService {
         try {
             this.progressManager.updateTask(researchTaskId, 'running', 'Researching historical and cultural context...');
             
+            const story = this.storyService.getStory(storyId);
             const storyResearchService = new StoryResearchService(this.aiService);
-            const researchText = await storyResearchService.performDeepResearch(transcription, storyId);
+            const researchText = await storyResearchService.performDeepResearch(transcription, storyId, story?.editorsNotes);
             
             // Save research
             this.progressManager.updateTask(researchTaskId, 'running', 'Saving research results...');
@@ -457,7 +458,11 @@ export class DirectorScriptGeneratorService {
                     duration: pair.contextSegment.duration,
                     startTime: pair.contextSegment.startTime,
                     status: 'pending',
-                    usedAssets: pair.contextSegment.usedAssets || []
+                    usedAssets: pair.contextSegment.usedAssets || [],
+                    // Cross-segment continuity data
+                    continuityReference: pair.aiSegment.continuityReference,
+                    continuityType: pair.aiSegment.continuityType || 'none',
+                    narrativeContext: pair.aiSegment.narrativeContext
                 };
                 
                 segments.push(mergedSegment);

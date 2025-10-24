@@ -74,16 +74,22 @@ export class ExecutionService {
                     this.progressManager.updateTask(parentTaskId, 'running', `Processing segment ${i + 1} of ${indices.length}...`, overallProgress);
                 }
                 
+                // Determine continuity reference for this segment
+                const continuityInfo = this.determineContinuityReference(story, segmentIndex);
+                const shouldUseRemix = continuityInfo.shouldUseRemix;
+                const remixVideoId = continuityInfo.remixVideoId;
+                
                 // Generate video for this segment using Sora API
                 const videoResult = await this.openaiService.generateVideoSegment(
                     segment.prompt,
                     segment.duration,
                     story.settings.model,
                     story.settings.resolution,
-                    [],
+                    story, // Pass full story config for character continuity
                     undefined, // imagePaths
                     undefined, // continuityFrame
-                    story.directoryPath // Use story's stored directory path
+                    story.directoryPath, // Use story's stored directory path
+                    remixVideoId
                 );
                 
                 // Update segment progress: Processing
@@ -291,6 +297,110 @@ export class ExecutionService {
             logger.error('Failed to generate segment:', error);
             throw error;
         }
+    }
+
+    /**
+     * Determine continuity reference for intelligent cross-segment anchoring
+     */
+    private determineContinuityReference(story: any, segmentIndex: number): {
+        shouldUseRemix: boolean;
+        remixVideoId?: string;
+        continuityType?: string;
+    } {
+        const currentSegment = story.directorScript[segmentIndex];
+        
+        // Check if segment has explicit continuity reference
+        if (currentSegment?.continuityReference) {
+            const referenceSegment = story.directorScript.find((seg: any) => seg.id === currentSegment.continuityReference);
+            if (referenceSegment?.videoPath) {
+                return {
+                    shouldUseRemix: true,
+                    remixVideoId: this.extractVideoIdFromPath(referenceSegment.videoPath),
+                    continuityType: currentSegment.continuityType || 'narrative'
+                };
+            }
+        }
+
+        // Fallback to intelligent continuity detection
+        const continuityInfo = this.findBestContinuityReference(story, segmentIndex);
+        
+        return {
+            shouldUseRemix: continuityInfo.shouldUseRemix,
+            remixVideoId: continuityInfo.remixVideoId,
+            continuityType: continuityInfo.continuityType
+        };
+    }
+
+    /**
+     * Find the best continuity reference based on narrative context
+     */
+    private findBestContinuityReference(story: any, segmentIndex: number): {
+        shouldUseRemix: boolean;
+        remixVideoId?: string;
+        continuityType?: string;
+    } {
+        const currentSegment = story.directorScript[segmentIndex];
+        const completedSegments = story.directorScript
+            .slice(0, segmentIndex)
+            .filter((seg: any) => seg?.videoPath && seg.status === 'completed');
+
+        if (completedSegments.length === 0) {
+            return { shouldUseRemix: false };
+        }
+
+        // Analyze narrative context for best continuity match
+        const currentContext = currentSegment?.narrativeContext;
+        
+        // Find segments with similar narrative context
+        const similarSegments = completedSegments.filter((seg: any) => {
+            const segContext = seg.narrativeContext;
+            if (!currentContext || !segContext) return false;
+
+            // Match by character focus
+            if (currentContext.characterFocus && segContext.characterFocus) {
+                const hasSharedCharacters = currentContext.characterFocus.some((char: string) => 
+                    segContext.characterFocus?.includes(char)
+                );
+                if (hasSharedCharacters) return true;
+            }
+
+            // Match by location
+            if (currentContext.locationContinuity && segContext.locationContinuity) {
+                return currentContext.locationContinuity === segContext.locationContinuity;
+            }
+
+            // Match by emotional tone
+            if (currentContext.emotionalTone && segContext.emotionalTone) {
+                return currentContext.emotionalTone === segContext.emotionalTone;
+            }
+
+            return false;
+        });
+
+        // Use the most recent similar segment, or fallback to previous segment
+        const referenceSegment = similarSegments.length > 0 
+            ? similarSegments[similarSegments.length - 1]
+            : completedSegments[completedSegments.length - 1];
+
+        return {
+            shouldUseRemix: true,
+            remixVideoId: this.extractVideoIdFromPath(referenceSegment.videoPath),
+            continuityType: similarSegments.length > 0 ? 'narrative' : 'sequential'
+        };
+    }
+
+    /**
+     * Extract video ID from video path for remix API
+     */
+    private extractVideoIdFromPath(videoPath: string): string | undefined {
+        // Extract video ID from path or return the path itself if it's already an ID
+        if (videoPath.startsWith('video_')) {
+            return videoPath;
+        }
+        
+        // Try to extract from filename
+        const filename = path.basename(videoPath, path.extname(videoPath));
+        return filename;
     }
 
 }

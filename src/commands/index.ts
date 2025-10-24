@@ -161,6 +161,15 @@ export function registerCommands(context: vscode.ExtensionContext, services: Ser
         })
     );
 
+
+    // Open editor's notes in a panel
+    context.subscriptions.push(
+        vscode.commands.registerCommand('sora.openEditorsNotesPanel', async (storyIdOrItem: any) => {
+            const storyId = typeof storyIdOrItem === 'string' ? storyIdOrItem : storyIdOrItem?.story?.id;
+            await openEditorsNotesPanel(storyService, storyId, context);
+        })
+    );
+
     // Manual story editing commands
     context.subscriptions.push(
         vscode.commands.registerCommand('sora.editStoryDetails', async (storyIdOrItem: any) => {
@@ -1353,5 +1362,645 @@ async function deleteAssetImage(
         logger.error('Failed to delete asset image:', error);
         Notifications.error(`Failed to delete image: ${error}`);
     }
+}
+
+/**
+ * Open Editor's Notes in a webview panel
+ */
+async function openEditorsNotesPanel(storyService: StoryService, storyId?: string, context?: vscode.ExtensionContext) {
+    try {
+        // Create and show a new webview panel
+        const panel = vscode.window.createWebviewPanel(
+            'soraEditorsNotes',
+            'Editor\'s Notes',
+            vscode.ViewColumn.One,
+            {
+                enableScripts: true,
+                retainContextWhenHidden: true,
+                localResourceRoots: []
+            }
+        );
+
+        // Get the HTML content - try multiple paths
+        let htmlContent: string;
+        try {
+            // First try the extension context path
+            const htmlPath = vscode.Uri.joinPath(context!.extensionUri, 'src', 'webviews', 'editorsNotes.html');
+            htmlContent = require('fs').readFileSync(htmlPath.fsPath, 'utf8');
+        } catch (error) {
+            try {
+                // Fallback to relative path from compiled location
+                const htmlPath = require('path').join(__dirname, '../../src/webviews/editorsNotes.html');
+                htmlContent = require('fs').readFileSync(htmlPath, 'utf8');
+            } catch (error2) {
+                // Final fallback - use embedded HTML
+                htmlContent = getEmbeddedEditorsNotesHTML();
+            }
+        }
+        panel.webview.html = htmlContent;
+
+        // Handle messages from the webview
+        panel.webview.onDidReceiveMessage(
+            async message => {
+                switch (message.command) {
+                    case 'loadNotes':
+                        await handleLoadNotes(panel.webview, storyService, storyId);
+                        break;
+                    case 'saveNotes':
+                        await handleSaveNotes(message.notes, panel.webview, storyService, storyId, message.showStatus);
+                        break;
+                    case 'summarizeField':
+                        await handleSummarizeField(message.fieldId, message.content, panel.webview, storyService);
+                        break;
+                }
+            },
+            undefined,
+            []
+        );
+
+        // Load notes when panel becomes visible
+        panel.onDidChangeViewState(e => {
+            if (e.webviewPanel.visible) {
+                handleLoadNotes(panel.webview, storyService, storyId);
+            }
+        });
+
+        logger.info('Editor\'s notes panel opened');
+    } catch (error) {
+        logger.error('Failed to open editor\'s notes panel:', error);
+        Notifications.error(`Failed to open editor's notes: ${error}`);
+    }
+}
+
+/**
+ * Handle loading notes in the webview
+ */
+async function handleLoadNotes(webview: vscode.Webview, storyService: StoryService, storyId?: string) {
+    try {
+        let currentStory;
+        
+        if (storyId) {
+            // Use the specific story ID provided
+            currentStory = storyService.getStory(storyId);
+        } else {
+            // Fallback to first story if no specific ID
+            const stories = storyService.getAllStories();
+            if (stories.length === 0) {
+                webview.postMessage({
+                    command: 'loadNotes',
+                    notes: null
+                });
+                return;
+            }
+            currentStory = stories[0];
+        }
+        
+        if (currentStory) {
+            webview.postMessage({
+                command: 'loadNotes',
+                notes: currentStory.editorsNotes || null
+            });
+        } else {
+            webview.postMessage({
+                command: 'loadNotes',
+                notes: null
+            });
+        }
+    } catch (error) {
+        logger.error('Error loading editor\'s notes:', error);
+        webview.postMessage({
+            command: 'loadNotes',
+            notes: null
+        });
+    }
+}
+
+/**
+ * Handle saving notes in the webview
+ */
+async function handleSaveNotes(notes: any, webview: vscode.Webview, storyService: StoryService, storyId?: string, showStatus?: boolean) {
+    try {
+        let currentStory;
+        
+        if (storyId) {
+            // Use the specific story ID provided
+            currentStory = storyService.getStory(storyId);
+        } else {
+            // Fallback to first story if no specific ID
+            const stories = storyService.getAllStories();
+            if (stories.length === 0) {
+                webview.postMessage({
+                    command: 'saveResult',
+                    success: false,
+                    error: 'No stories available'
+                });
+                return;
+            }
+            currentStory = stories[0];
+        }
+
+        if (!currentStory) {
+            webview.postMessage({
+                command: 'saveResult',
+                success: false,
+                error: 'No story found'
+            });
+            return;
+        }
+
+        // Update story with editor's notes
+        const updatedStory = {
+            ...currentStory,
+            editorsNotes: {
+                ...notes,
+                createdAt: currentStory.editorsNotes?.createdAt || new Date().toISOString(),
+                modifiedAt: new Date().toISOString()
+            }
+        };
+
+        storyService.updateStory(currentStory.id, updatedStory);
+
+        webview.postMessage({
+            command: 'saveResult',
+            success: true,
+            showStatus: showStatus || false
+        });
+
+        logger.info(`Editor's notes saved for story ${currentStory.id}`);
+    } catch (error) {
+        logger.error('Error saving editor\'s notes:', error);
+        webview.postMessage({
+            command: 'saveResult',
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            showStatus: showStatus || false
+        });
+    }
+}
+
+/**
+ * Handle summarizing a field using AI
+ */
+async function handleSummarizeField(fieldId: string, content: string, webview: vscode.Webview, storyService: StoryService) {
+    try {
+        logger.info(`Handling summarize request for field: ${fieldId}, content length: ${content.length}`);
+        
+        // Get the AI service from the extension
+        const services = require('../extension').getServices();
+        if (!services || !services.aiService) {
+            throw new Error('AI service not initialized');
+        }
+        const aiService = services.aiService;
+        
+        // Create a prompt based on the field type
+        const fieldPrompts: { [key: string]: string } = {
+            'researchGuidance': 'Summarize and refine this research guidance for AI story analysis. Make it concise but comprehensive:',
+            'scriptGuidance': 'Summarize and refine this script guidance for video generation. Make it clear and actionable:',
+            'visualStyle': 'Summarize and refine this visual style description. Make it specific and cinematic:',
+            'characterNotes': 'Summarize and refine this character description. Make it vivid and detailed:',
+            'narrativeFocus': 'Summarize and refine this narrative focus. Make it thematic and clear:',
+            'technicalNotes': 'Summarize and refine these technical requirements. Make them specific and actionable:'
+        };
+        
+        const prompt = fieldPrompts[fieldId] || 'Summarize and refine this content:';
+        const fullPrompt = `${prompt}\n\n${content}`;
+        
+        // Call the AI service to summarize
+        const summarizedContent = await aiService.getRawText(fullPrompt);
+        
+        // Send the result back to the webview
+        webview.postMessage({
+            command: 'summarizeResult',
+            fieldId: fieldId,
+            success: true,
+            summarizedContent: summarizedContent.trim()
+        });
+        
+    } catch (error) {
+        logger.error('Error summarizing field:', error);
+        webview.postMessage({
+            command: 'summarizeResult',
+            fieldId: fieldId,
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error'
+        });
+    }
+}
+
+/**
+ * Get embedded HTML content for Editor's Notes
+ */
+function getEmbeddedEditorsNotesHTML(): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Editor's Notes</title>
+    <style>
+        :root {
+            --vscode-font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+            --vscode-font-size: var(--vscode-font-size, 13px);
+            --vscode-font-weight: var(--vscode-font-weight, 400);
+            --vscode-editor-background: var(--vscode-editor-background, #ffffff);
+            --vscode-editor-foreground: var(--vscode-editor-foreground, #000000);
+            --vscode-panel-background: var(--vscode-panel-background, #f3f3f3);
+            --vscode-panel-border: var(--vscode-panel-border, #e1e1e1);
+            --vscode-input-background: var(--vscode-input-background, #ffffff);
+            --vscode-input-foreground: var(--vscode-input-foreground, #000000);
+            --vscode-input-border: var(--vscode-input-border, #cccccc);
+            --vscode-button-background: var(--vscode-button-background, #0e639c);
+            --vscode-button-foreground: var(--vscode-button-foreground, #ffffff);
+            --vscode-button-hoverBackground: var(--vscode-button-hoverBackground, #1177bb);
+            --vscode-button-secondaryBackground: var(--vscode-button-secondaryBackground, #5a5a5a);
+            --vscode-button-secondaryForeground: var(--vscode-button-secondaryForeground, #ffffff);
+            --vscode-button-secondaryHoverBackground: var(--vscode-button-secondaryHoverBackground, #6a6a6a);
+            --vscode-focusBorder: var(--vscode-focusBorder, #007acc);
+            --vscode-textLink-foreground: var(--vscode-textLink-foreground, #0066cc);
+            --vscode-textPreformat-foreground: var(--vscode-textPreformat-foreground, #a31515);
+            --vscode-textBlockQuote-background: var(--vscode-textBlockQuote-background, #f0f0f0);
+            --vscode-textBlockQuote-border: var(--vscode-textBlockQuote-border, #cccccc);
+            --vscode-textCodeBlock-background: var(--vscode-textCodeBlock-background, #f5f5f5);
+            --vscode-widget-shadow: var(--vscode-widget-shadow, 0 2px 8px rgba(0, 0, 0, 0.1));
+        }
+
+        body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            font-weight: var(--vscode-font-weight);
+            margin: 0;
+            padding: 20px;
+            background-color: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            color: var(--vscode-editor-foreground);
+            margin-bottom: 30px;
+            border-bottom: 2px solid var(--vscode-focusBorder);
+            padding-bottom: 10px;
+        }
+        
+        .section {
+            margin-bottom: 30px;
+            background: var(--vscode-panel-background);
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid var(--vscode-panel-border);
+            box-shadow: var(--vscode-widget-shadow);
+        }
+        
+        .section h3 {
+            color: var(--vscode-editor-foreground);
+            margin-top: 0;
+            margin-bottom: 15px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        
+        .section p {
+            color: var(--vscode-editor-foreground);
+            margin-bottom: 15px;
+            font-size: 14px;
+            opacity: 0.8;
+        }
+        
+        textarea {
+            width: 100%;
+            min-height: 100px;
+            padding: 12px;
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 6px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            font-family: inherit;
+            font-size: 14px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+        
+        textarea:focus {
+            outline: none;
+            border-color: var(--vscode-focusBorder);
+            box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .btn-primary {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+        }
+        
+        .btn-primary:hover {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+        
+        .btn-secondary {
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
+        
+        .btn-secondary:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
+        
+        .btn-summarize {
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            font-size: 12px;
+            padding: 6px 12px;
+            margin-top: 8px;
+        }
+        
+        .btn-summarize:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
+        
+        .btn-summarize:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .status {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        
+        .status.success {
+            background-color: var(--vscode-textBlockQuote-background);
+            color: var(--vscode-textPreformat-foreground);
+            border: 1px solid var(--vscode-textBlockQuote-border);
+        }
+        
+        .status.error {
+            background-color: var(--vscode-textBlockQuote-background);
+            color: var(--vscode-textPreformat-foreground);
+            border: 1px solid var(--vscode-textBlockQuote-border);
+        }
+        
+        .help-text {
+            font-size: 12px;
+            color: var(--vscode-editor-foreground);
+            margin-top: 5px;
+            opacity: 0.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📝 Editor's Notes</h1>
+        <p style="color: var(--vscode-editor-foreground); margin-bottom: 30px; opacity: 0.8;">
+            Add your guidance and preferences to influence research and script generation. 
+            These notes will be incorporated into the AI analysis and prompt generation.
+        </p>
+        
+        <div class="section">
+            <h3>🔍 Research Guidance</h3>
+            <p>Direct the research focus and areas of interest for the story analysis.</p>
+            <textarea id="researchGuidance" placeholder="e.g., Focus on 1st century Mediterranean culture, early Christian symbolism, and historical context of Patmos Island..."></textarea>
+            <div class="help-text">This will guide the AI research to focus on specific areas of interest.</div>
+            <button class="btn-summarize" data-field="researchGuidance" onclick="summarizeField('researchGuidance')">📝 Summarize</button>
+        </div>
+        
+        <div class="section">
+            <h3>🎬 Script Guidance</h3>
+            <p>Provide direction for script generation and narrative flow.</p>
+            <textarea id="scriptGuidance" placeholder="e.g., Emphasize the spiritual transformation journey, focus on the protagonist's emotional arc, maintain biblical epic tone..."></textarea>
+            <div class="help-text">This influences how the AI generates video prompts and narrative structure.</div>
+            <button class="btn-summarize" data-field="scriptGuidance" onclick="summarizeField('scriptGuidance')">📝 Summarize</button>
+        </div>
+        
+        <div class="section">
+            <h3>🎨 Visual Style</h3>
+            <p>Specify your preferred visual style and cinematographic approach.</p>
+            <textarea id="visualStyle" placeholder="e.g., Cinematic, golden hour lighting, biblical epic style, high contrast, warm color palette..."></textarea>
+            <div class="help-text">This will be applied consistently across all video segments.</div>
+            <button class="btn-summarize" data-field="visualStyle" onclick="summarizeField('visualStyle')">📝 Summarize</button>
+        </div>
+        
+        <div class="section">
+            <h3>👤 Character Notes</h3>
+            <p>Provide specific guidance about character appearance and behavior.</p>
+            <textarea id="characterNotes" placeholder="e.g., Protagonist should appear weathered but dignified, with piercing eyes that convey spiritual depth..."></textarea>
+            <div class="help-text">This influences character descriptions and visual consistency.</div>
+            <button class="btn-summarize" data-field="characterNotes" onclick="summarizeField('characterNotes')">📝 Summarize</button>
+        </div>
+        
+        <div class="section">
+            <h3>📖 Narrative Focus</h3>
+            <p>Define the themes and narrative direction for the story.</p>
+            <textarea id="narrativeFocus" placeholder="e.g., Redemption and divine revelation themes, spiritual awakening, transformation from exile to enlightenment..."></textarea>
+            <div class="help-text">This guides the overall narrative and thematic approach.</div>
+            <button class="btn-summarize" data-field="narrativeFocus" onclick="summarizeField('narrativeFocus')">📝 Summarize</button>
+        </div>
+        
+        <div class="section">
+            <h3>⚙️ Technical Notes</h3>
+            <p>Specify technical requirements and constraints.</p>
+            <textarea id="technicalNotes" placeholder="e.g., Maintain 16:9 aspect ratio, high contrast lighting, avoid fast cuts, prefer steady camera work..."></textarea>
+            <div class="help-text">Technical requirements that will be incorporated into video generation.</div>
+            <button class="btn-summarize" data-field="technicalNotes" onclick="summarizeField('technicalNotes')">📝 Summarize</button>
+        </div>
+        
+        <div class="button-group">
+            <button class="btn-secondary" onclick="clearNotes()">🗑️ Clear All</button>
+        </div>
+        
+        <div id="status"></div>
+        <div id="autoSaveStatus" style="position: fixed; bottom: 10px; right: 10px; font-size: 12px; opacity: 0.6; color: var(--vscode-editor-foreground);">Auto-save enabled</div>
+    </div>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+        
+        // Load existing notes when page loads
+        window.addEventListener('load', () => {
+            loadNotes();
+            setupAutoSave();
+        });
+        
+        function setupAutoSave() {
+            const textareas = [
+                'researchGuidance',
+                'scriptGuidance', 
+                'visualStyle',
+                'characterNotes',
+                'narrativeFocus',
+                'technicalNotes'
+            ];
+            
+            textareas.forEach(fieldId => {
+                const textarea = document.getElementById(fieldId);
+                if (textarea) {
+                    // Auto-save on input with debouncing
+                    let saveTimeout;
+                    textarea.addEventListener('input', () => {
+                        clearTimeout(saveTimeout);
+                        updateAutoSaveStatus('Saving...');
+                        saveTimeout = setTimeout(() => {
+                            saveNotes();
+                            updateAutoSaveStatus('Saved');
+                            setTimeout(() => {
+                                updateAutoSaveStatus('Auto-save enabled');
+                            }, 2000);
+                        }, 1000); // Save 1 second after user stops typing
+                    });
+                }
+            });
+        }
+        
+        function loadNotes() {
+            vscode.postMessage({
+                command: 'loadNotes'
+            });
+        }
+        
+        function saveNotes(showStatus = false) {
+            const notes = {
+                researchGuidance: document.getElementById('researchGuidance').value.trim(),
+                scriptGuidance: document.getElementById('scriptGuidance').value.trim(),
+                visualStyle: document.getElementById('visualStyle').value.trim(),
+                characterNotes: document.getElementById('characterNotes').value.trim(),
+                narrativeFocus: document.getElementById('narrativeFocus').value.trim(),
+                technicalNotes: document.getElementById('technicalNotes').value.trim(),
+                modifiedAt: new Date().toISOString()
+            };
+            
+            vscode.postMessage({
+                command: 'saveNotes',
+                notes: notes,
+                showStatus: showStatus
+            });
+        }
+        
+        function clearNotes() {
+            if (confirm('Are you sure you want to clear all editor\\'s notes?')) {
+                document.getElementById('researchGuidance').value = '';
+                document.getElementById('scriptGuidance').value = '';
+                document.getElementById('visualStyle').value = '';
+                document.getElementById('characterNotes').value = '';
+                document.getElementById('narrativeFocus').value = '';
+                document.getElementById('technicalNotes').value = '';
+                
+                showStatus('All notes cleared', 'success');
+            }
+        }
+        
+        function summarizeField(fieldId) {
+            alert('Summarize called for: ' + fieldId);
+            console.log('Summarize field called for:', fieldId);
+            const textarea = document.getElementById(fieldId);
+            const content = textarea.value.trim();
+            
+            if (!content) {
+                showStatus('Please enter some content to summarize', 'error');
+                return;
+            }
+            
+            // Find the button for this field using data attribute
+            const button = document.querySelector('button[data-field="' + fieldId + '"]');
+            if (button) {
+                button.disabled = true;
+                button.textContent = '⏳ Summarizing...';
+            }
+            
+            console.log('Sending summarize request for field:', fieldId, 'content length:', content.length);
+            
+            // Send to extension for AI processing
+            vscode.postMessage({
+                command: 'summarizeField',
+                fieldId: fieldId,
+                content: content
+            });
+        }
+        
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = \`status \${type}\`;
+            
+            setTimeout(() => {
+                statusDiv.textContent = '';
+                statusDiv.className = '';
+            }, 3000);
+        }
+        
+        function updateAutoSaveStatus(message) {
+            const autoSaveDiv = document.getElementById('autoSaveStatus');
+            if (autoSaveDiv) {
+                autoSaveDiv.textContent = message;
+            }
+        }
+        
+        // Handle messages from extension
+        window.addEventListener('message', event => {
+            const message = event.data;
+            
+            switch (message.command) {
+                case 'loadNotes':
+                    if (message.notes) {
+                        document.getElementById('researchGuidance').value = message.notes.researchGuidance || '';
+                        document.getElementById('scriptGuidance').value = message.notes.scriptGuidance || '';
+                        document.getElementById('visualStyle').value = message.notes.visualStyle || '';
+                        document.getElementById('characterNotes').value = message.notes.characterNotes || '';
+                        document.getElementById('narrativeFocus').value = message.notes.narrativeFocus || '';
+                        document.getElementById('technicalNotes').value = message.notes.technicalNotes || '';
+                    }
+                    break;
+                    
+                case 'saveResult':
+                    if (message.showStatus) {
+                        if (message.success) {
+                            showStatus('Editor\\'s notes saved successfully!', 'success');
+                        } else {
+                            showStatus('Failed to save notes: ' + message.error, 'error');
+                        }
+                    }
+                    break;
+                    
+                case 'summarizeResult':
+                    // Re-enable the button
+                    const button = document.querySelector('button[data-field="' + message.fieldId + '"]');
+                    if (button) {
+                        button.disabled = false;
+                        button.textContent = '📝 Summarize';
+                    }
+                    
+                    if (message.success) {
+                        // Update the textarea with the summarized content
+                        document.getElementById(message.fieldId).value = message.summarizedContent;
+                        showStatus('Content summarized successfully!', 'success');
+                    } else {
+                        showStatus('Failed to summarize: ' + message.error, 'error');
+                    }
+                    break;
+            }
+        });
+    </script>
+</body>
+</html>`;
 }
 

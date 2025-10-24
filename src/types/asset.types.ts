@@ -124,11 +124,30 @@ export interface MasterContextFile {
     rawVisualPrompt: string;
     usedAssets: string[];
   }[];
+  editorsNotes?: {
+    researchGuidance?: string;
+    scriptGuidance?: string;
+    visualStyle?: string;
+    characterNotes?: string;
+    narrativeFocus?: string;
+    technicalNotes?: string;
+    createdAt?: string;
+    modifiedAt?: string;
+  } | null;
 }
 
 export interface SegmentPrompt {
   segmentId: string;
   finalPrompt: string;
+  // Cross-segment continuity
+  continuityReference?: string;
+  continuityType?: 'sequential' | 'narrative' | 'character' | 'location' | 'none';
+  narrativeContext?: {
+    sceneType?: 'establishing' | 'action' | 'dialogue' | 'transition';
+    characterFocus?: string[];
+    locationContinuity?: string;
+    emotionalTone?: string;
+  };
 }
 
 export interface SegmentPair {

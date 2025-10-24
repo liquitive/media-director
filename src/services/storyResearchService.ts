@@ -13,15 +13,15 @@ export class StoryResearchService {
     /**
      * Perform comprehensive deep research on a story transcription
      */
-    async performDeepResearch(transcription: string, storyId: string): Promise<string> {
+    async performDeepResearch(transcription: string, storyId: string, editorsNotes?: any): Promise<string> {
         logger.info(`Starting deep research for story ${storyId}`);
         
         try {
             // Step 1: Analyze with web search for factual context
             const webResults = await this.analyzeWithWebSearch(transcription);
             
-            // Step 2: Generate comprehensive research text using AI
-            const researchText = await this.generateResearchText(transcription, webResults);
+            // Step 2: Generate comprehensive research text using AI with editor's guidance
+            const researchText = await this.generateResearchText(transcription, webResults, editorsNotes);
             
             logger.info(`Research completed for story ${storyId}: ${researchText.length} characters of research text`);
             return researchText;
@@ -51,7 +51,7 @@ export class StoryResearchService {
     /**
      * Generate comprehensive research text using AI analysis
      */
-    private async generateResearchText(transcription: string, webResults: any): Promise<string> {
+    private async generateResearchText(transcription: string, webResults: any, editorsNotes?: any): Promise<string> {
         logger.info('Generating comprehensive research text...');
         
         const researchPrompt = `You are a master researcher with expertise in science history (modern and ancient), culture, theology, philosophy, literature art, cinematography amongst other disciplines. 
@@ -60,6 +60,15 @@ Your mission: Perform COMPREHENSIVE research on this story transcription. Leave 
 
 TRANSCRIPT:
 ${transcription}
+
+${editorsNotes ? `EDITOR'S GUIDANCE:
+${editorsNotes.researchGuidance ? `Research Direction: ${editorsNotes.researchGuidance}` : ''}
+${editorsNotes.characterNotes ? `Character Focus: ${editorsNotes.characterNotes}` : ''}
+${editorsNotes.narrativeFocus ? `Narrative Focus: ${editorsNotes.narrativeFocus}` : ''}
+${editorsNotes.visualStyle ? `Visual Style Preferences: ${editorsNotes.visualStyle}` : ''}
+${editorsNotes.technicalNotes ? `Technical Requirements: ${editorsNotes.technicalNotes}` : ''}
+
+Please incorporate these editor's guidance into your research analysis.` : ''}
 
 REQUIREMENTS:
 Provide detailed research covering the following sections:

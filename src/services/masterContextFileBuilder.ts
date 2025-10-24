@@ -68,7 +68,8 @@ export class MasterContextFileBuilder {
         timingMap,
         cinematographyGuidelines: cinematography,
         generationInstructions: this.buildGenerationInstructions(analysis),
-        segments
+        segments,
+        editorsNotes: story?.editorsNotes || null
       };
       
       // 6. Write to temporary file

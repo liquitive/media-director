@@ -22,13 +22,13 @@ export class AssistantsAPIOneShotGenerator {
     type: 'function' as const,
     function: {
       name: 'generateSegments',
-      description: 'Generate video segment prompts for all segments in the story',
+      description: 'Generate video segment prompts for all segments in the story with cross-segment continuity analysis',
       parameters: {
         type: 'object',
         properties: {
           segments: {
             type: 'array',
-            description: 'Array of generated segment prompts',
+            description: 'Array of generated segment prompts with continuity references',
             items: {
               type: 'object',
               properties: {
@@ -39,6 +39,38 @@ export class AssistantsAPIOneShotGenerator {
                 finalPrompt: {
                   type: 'string',
                   description: 'The final prompt for video generation (max 400 tokens)'
+                },
+                continuityReference: {
+                  type: 'string',
+                  description: 'ID of segment to use as remix reference for character/location continuity (optional)'
+                },
+                continuityType: {
+                  type: 'string',
+                  enum: ['sequential', 'narrative', 'character', 'location', 'none'],
+                  description: 'Type of continuity relationship with reference segment'
+                },
+                narrativeContext: {
+                  type: 'object',
+                  properties: {
+                    sceneType: {
+                      type: 'string',
+                      enum: ['establishing', 'action', 'dialogue', 'transition'],
+                      description: 'Type of scene for continuity matching'
+                    },
+                    characterFocus: {
+                      type: 'array',
+                      items: { type: 'string' },
+                      description: 'Primary characters in this segment for continuity matching'
+                    },
+                    locationContinuity: {
+                      type: 'string',
+                      description: 'Location reference for continuity matching'
+                    },
+                    emotionalTone: {
+                      type: 'string',
+                      description: 'Emotional context for continuity matching'
+                    }
+                  }
                 }
               },
               required: ['segmentId', 'finalPrompt']
@@ -132,7 +164,8 @@ export class AssistantsAPIOneShotGenerator {
         compressedAssets: parsed.compressedAssets,
         cinematographyGuidelines: parsed.cinematographyGuidelines,
         generationInstructions: parsed.generationInstructions,
-        segments: parsed.segments
+        segments: parsed.segments,
+        editorsNotes: parsed.editorsNotes
       };
       // Safety: trim excessively long research text to keep payload under limits
       if (inlineContext.research && typeof inlineContext.research === 'string' && inlineContext.research.length > 120000) {
@@ -400,7 +433,7 @@ export class AssistantsAPIOneShotGenerator {
     // Create new assistant with function calling
     const assistant = await this.openai.beta.assistants.create({
       name: 'Sora Video Director',
-      instructions: `You are an expert video generation prompt engineer specializing in Sora-style AI video models.
+      instructions: `You are an expert video generation prompt engineer specializing in Sora-style AI video models with advanced cross-segment continuity analysis.
 
 When you receive a request:
 1. Use file_search to read the master_context.json file thoroughly
@@ -409,6 +442,35 @@ When you receive a request:
 4. Use the visual attributes from context.assets[].visual_attributes
 5. Match segment text from context.segments[].text
 6. Follow themes from context.research
+
+🎬 CROSS-SEGMENT CONTINUITY ANALYSIS:
+For each segment, analyze:
+- Which characters appear (characterFocus)
+- What location/setting is used (locationContinuity) 
+- What emotional tone/mood (emotionalTone)
+- What type of scene (sceneType: establishing/action/dialogue/transition)
+
+Then determine the BEST continuity reference:
+- For character continuity: Reference segments with the same character/s
+- For location continuity: Reference segments in the same location/setting
+- For emotional continuity: Reference segments with similar emotional tone
+- For narrative flow: Reference the most thematically similar previous segment
+
+CONTINUITY RULES:
+- First segment: continuityType = "none" (no reference)
+- Character scenes: Reference the most recent segment with the same primary character
+- Location scenes: Reference the most recent segment in the same location
+- Emotional scenes: Reference segments with similar emotional tone
+- Transition scenes: Reference the previous segment for smooth flow
+
+📝 EDITOR'S GUIDANCE INTEGRATION:
+If editor's notes are provided, incorporate them into your analysis:
+- Research Guidance: Focus research on specified areas
+- Script Guidance: Follow specific narrative directions
+- Visual Style: Apply specified visual preferences
+- Character Notes: Emphasize specified character aspects
+- Narrative Focus: Align with specified themes and direction
+- Technical Notes: Incorporate any technical requirements
 
 CRITICAL: You will be penalized for using character names not in the context file (like "Jessica", "Miro", "Oliver"). Only use assets explicitly defined in context.assets[].
 
@@ -476,8 +538,20 @@ Instructions:
 2) For EVERY entry in context.segments[], produce exactly one segment with:
    - segmentId: the id from the context entry
    - finalPrompt: a production-ready Sora prompt (<= 400 tokens)
+   - continuityReference: (optional) ID of segment to reference for continuity
+   - continuityType: (optional) Type of continuity relationship
+   - narrativeContext: (optional) Context for continuity matching
 3) Always call the function generateSegments with a single JSON argument of shape {"segments": [...]}.
 4) Output must be STRICT JSON in the function args. No prose, no markdown, no comments.
+
+📝 EDITOR'S GUIDANCE:
+If context.editorsNotes is provided, incorporate the guidance into your prompts:
+- Research Guidance: Focus on specified research areas
+- Script Guidance: Follow specific narrative directions  
+- Visual Style: Apply specified visual preferences
+- Character Notes: Emphasize specified character aspects
+- Narrative Focus: Align with specified themes
+- Technical Notes: Incorporate technical requirements
 
 <CONTEXT_JSON>
 ${contextJson}

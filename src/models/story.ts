@@ -13,6 +13,15 @@ export interface Segment {
     videoPath?: string;
     error?: string;
     usedAssets?: string[]; // IDs of assets used in this segment
+    // Cross-segment continuity
+    continuityReference?: string; // ID of segment to use as remix reference
+    continuityType?: 'sequential' | 'narrative' | 'character' | 'location' | 'none';
+    narrativeContext?: {
+        sceneType?: string; // 'establishing', 'action', 'dialogue', 'transition'
+        characterFocus?: string[]; // Which characters are primary in this segment
+        locationContinuity?: string; // Location reference for continuity
+        emotionalTone?: string; // Emotional context for continuity
+    };
 }
 
 export interface Story {
@@ -61,6 +70,17 @@ export interface Story {
     assetsUsed?: string[]; // IDs of assets used in this story
     assetsExtracted?: boolean; // Whether assets have been extracted
     extractionDate?: string; // When assets were extracted
+    // Editor's notes for guided research and script generation
+    editorsNotes?: {
+        researchGuidance?: string; // Notes to guide research direction
+        scriptGuidance?: string; // Notes to guide script generation
+        visualStyle?: string; // Specific visual style preferences
+        characterNotes?: string; // Character-specific guidance
+        narrativeFocus?: string; // Narrative direction and themes
+        technicalNotes?: string; // Technical requirements or constraints
+        createdAt?: string;
+        modifiedAt?: string;
+    };
     generationConfig?: {
         model: 'sora' | 'sora-turbo';
         visualStyle: string;
