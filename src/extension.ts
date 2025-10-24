@@ -161,8 +161,8 @@ async function initializeServices(context: vscode.ExtensionContext): Promise<voi
             vscode.commands.executeCommand('workbench.action.openSettings', 'sora.apiKey');
         }
         
-        // Still allow extension to load, but AI features won't work
-        throw new Error('OpenAI API key required');
+        // Allow extension to load, but AI features won't work
+        logger.warn('Extension loaded without API key - AI features will be disabled');
     }
 
     // Get FFmpeg path
@@ -179,7 +179,7 @@ async function initializeServices(context: vscode.ExtensionContext): Promise<voi
     logger.setStoryService(storyService);
 
     // Initialize AI Service (will try IDE AI for text, always use OpenAI for media)
-    aiService = new AIService(apiKey);
+    aiService = new AIService(apiKey || 'dummy-key'); // Use dummy key if none provided
     await aiService.initialize();
     
     const providerInfo = aiService.getProviderInfo();
@@ -212,7 +212,7 @@ async function initializeServices(context: vscode.ExtensionContext): Promise<voi
     if (workspaceRoot) {
         // Initialize error logger and assistants generator now that workspaceRoot is available
         const errorLogger = new ExplicitErrorLogger(workspaceRoot);
-        const assistantsGenerator = new AssistantsAPIOneShotGenerator(apiKey, context, errorLogger);
+        const assistantsGenerator = new AssistantsAPIOneShotGenerator(apiKey || 'dummy-key', context, errorLogger);
         
         // Update execution service with the assistants generator
         (executionService as any).assistantsGenerator = assistantsGenerator;
