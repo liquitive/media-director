@@ -64,7 +64,7 @@ export class OpenAIService {
         storyConfig?: any,
         imagePaths?: string | string[],
         continuityFrame?: string,
-        storyId?: string
+        storyDirectoryPath?: string
     ): Promise<{ id: string; url?: string }> {
         try {
             logger.info(`Original prompt length: ${prompt.length} chars`);
@@ -135,7 +135,7 @@ export class OpenAIService {
             const completedVideo = await this.generateVideoWithRetry(videoParams, 3);
             
             // Download the video to local storage
-            const localVideoPath = await this.downloadVideoToLocal(completedVideo.id, completedVideo.url, storyId);
+            const localVideoPath = await this.downloadVideoToLocal(completedVideo.id, completedVideo.url, storyDirectoryPath);
             
             return {
                 id: completedVideo.id,
@@ -154,7 +154,7 @@ export class OpenAIService {
                 duration: duration,
                 mappedDuration: this.mapDurationToSoraSupported(duration),
                 prompt: prompt.substring(0, 100) + '...',
-                storyId: storyId
+                storyDirectoryPath: storyDirectoryPath
             };
             
             logger.error('Detailed error context:', errorDetails);
@@ -451,16 +451,11 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
     /**
      * Download video to local storage with proper path structure
      */
-    private async downloadVideoToLocal(videoId: string, videoUrl?: string, storyId?: string): Promise<string> {
+    private async downloadVideoToLocal(videoId: string, videoUrl?: string, storyDirectoryPath?: string): Promise<string> {
         try {
-            // Create local video directory structure in story segments folder
-            // Use workspace-relative path instead of absolute path
-            const workspaceRoot = process.cwd();
-            
-            // Use story name format instead of story ID
-            const storyDirName = storyId ? storyId.replace(/[^a-z0-9]/gi, '_').toLowerCase() : 'default';
-            
-            const videoDir = path.join(workspaceRoot, 'sora-output', 'stories', storyDirName, 'segments');
+            // Use provided story directory path or fallback to default
+            const storyDir = storyDirectoryPath || path.join(process.cwd(), 'sora-output', 'stories', 'default');
+            const videoDir = path.join(storyDir, 'segments');
             
             // Ensure parent directories exist first
             const parentDir = path.dirname(videoDir);

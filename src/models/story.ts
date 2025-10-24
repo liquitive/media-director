@@ -19,6 +19,7 @@ export interface Story {
     id: string;
     name: string;
     description: string;
+    directoryPath: string; // Story's directory path - set when story is created
     inputType: 'text' | 'audio' | 'video';
     inputSource: string;
     content: string;

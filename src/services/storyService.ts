@@ -32,10 +32,20 @@ export class StoryService {
         inputSource: string = '',
         content: string = ''
     ): Story {
+        // Get workspace root and create directory path
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) {
+            throw new Error('No workspace folder open. Please open a folder to use Sora Director.');
+        }
+        
+        const storyDirName = name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        const directoryPath = path.join(workspaceRoot, 'sora-output', 'stories', storyDirName);
+        
         const story: Story = {
             id: `story_${Date.now()}`,
             name,
             description: '',
+            directoryPath,
             inputType,
             inputSource,
             content,
@@ -112,6 +122,7 @@ export class StoryService {
                                     id: id,
                                     name: storyDir.replace(/_/g, ' '),
                                     description: `Story discovered from file system`,
+                                    directoryPath: path.join(workspaceRoot, 'sora-output', 'stories', storyDir),
                                     inputType: 'audio',
                                     inputSource: '',
                                     content: '',
@@ -351,16 +362,25 @@ export class StoryService {
      * Get story directory path
      */
     getStoryDirectory(id: string): string {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const story = this.stories.get(id);
+        if (!story) {
+            throw new Error(`Story with ID ${id} not found`);
+        }
         
+        return story.directoryPath;
+    }
+
+    /**
+     * Get default story directory path for a given name
+     */
+    private getDefaultStoryDirectory(name: string): string {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!workspaceRoot) {
             throw new Error('No workspace folder open. Please open a folder to use Sora Director.');
         }
         
-        const story = this.stories.get(id);
-        const storyName = story?.name.replace(/[^a-z0-9]/gi, '_').toLowerCase() || id;
-        
-        return path.join(workspaceRoot, 'sora-output', 'stories', storyName);
+        const storyDirName = name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        return path.join(workspaceRoot, 'sora-output', 'stories', storyDirName);
     }
 
     /**
@@ -530,10 +550,14 @@ export class StoryService {
             if (this.stories.has(firstSegment.storyId)) return;
 
             // Create a minimal story object
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            if (!workspaceRoot) return;
+            
             const story: Story = {
                 id: firstSegment.storyId,
                 name: storyDir.replace(/_/g, ' '),
                 description: `Story discovered from file system`,
+                directoryPath: path.join(workspaceRoot, 'sora-output', 'stories', storyDir),
                 inputType: 'audio',
                 inputSource: '',
                 content: '',
@@ -720,6 +744,7 @@ export class StoryService {
             id: storyData.id || `story_${Date.now()}`,
             name: storyData.name || 'Imported Story',
             description: storyData.description || '',
+            directoryPath: storyData.directoryPath || this.getDefaultStoryDirectory(storyData.name || 'Imported Story'),
             inputType: storyData.inputType || 'text',
             inputSource: storyData.inputSource || '',
             content: storyData.content || '',
@@ -761,6 +786,7 @@ export class StoryService {
             id: `story_${Date.now()}`,
             name: jsonData.title || 'Imported Script',
             description: jsonData.description || '',
+            directoryPath: this.getDefaultStoryDirectory(jsonData.title || 'Imported Script'),
             inputType: 'text',
             inputSource: '',
             content: '',
