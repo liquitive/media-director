@@ -456,7 +456,11 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
             // Create local video directory structure in story segments folder
             // Use workspace-relative path instead of absolute path
             const workspaceRoot = process.cwd();
-            const videoDir = path.join(workspaceRoot, 'sora-output', 'stories', storyId || 'default', 'segments');
+            
+            // Use story name format instead of story ID
+            const storyDirName = storyId ? storyId.replace(/[^a-z0-9]/gi, '_').toLowerCase() : 'default';
+            
+            const videoDir = path.join(workspaceRoot, 'sora-output', 'stories', storyDirName, 'segments');
             
             // Ensure parent directories exist first
             const parentDir = path.dirname(videoDir);

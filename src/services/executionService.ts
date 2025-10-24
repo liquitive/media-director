@@ -83,7 +83,7 @@ export class ExecutionService {
                     [],
                     undefined, // imagePaths
                     undefined, // continuityFrame
-                    storyId // storyId for proper path resolution
+                    story.name // Use story name instead of story ID for directory path
                 );
                 
                 // Update segment progress: Processing
