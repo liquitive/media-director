@@ -27,6 +27,26 @@ export class OpenAIService {
     }
 
     /**
+     * Map resolution to Sora-supported values
+     */
+    private mapResolutionToSoraSupported(resolution: string): string {
+        switch (resolution) {
+            case '1920x1080':
+                return '1280x720'; // Map 1080p to 720p landscape
+            case '1280x720':
+                return '1280x720'; // Already supported
+            case '720x1280':
+                return '720x1280'; // Portrait mode
+            case '1024x1792':
+                return '1024x1792'; // Portrait mode
+            case '1792x1024':
+                return '1792x1024'; // Landscape mode
+            default:
+                return '1280x720'; // Default to 720p landscape
+        }
+    }
+
+    /**
      * Get the API key for use by other services
      */
     getApiKey(): string {
@@ -83,7 +103,7 @@ export class OpenAIService {
             const videoParams: any = {
                 model,
                 prompt: enhancedPrompt,
-                size: size as any,  // Type assertion for size
+                size: this.mapResolutionToSoraSupported(size),  // Map to Sora-supported resolution
                 seconds: this.mapDurationToSoraSupported(duration)  // Map to Sora-supported values
             };
             
