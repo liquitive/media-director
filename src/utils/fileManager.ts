@@ -31,47 +31,6 @@ export class FileManager {
         }
     }
 
-    /**
-     * Save transcription to source directory
-     */
-    static saveTranscription(transcription: string, storyDir: string): string {
-        try {
-            const sourceDir = path.join(storyDir, 'source');
-            const transcriptionPath = path.join(sourceDir, 'transcription.txt');
-            
-            // Ensure source directory exists
-            if (!fs.existsSync(sourceDir)) {
-                fs.mkdirSync(sourceDir, { recursive: true });
-            }
-            
-            fs.writeFileSync(transcriptionPath, transcription, 'utf8');
-            return transcriptionPath;
-        } catch (error) {
-            console.error('Error saving transcription:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Save audio analysis to source directory
-     */
-    static saveAudioAnalysis(analysis: any, storyDir: string): string {
-        try {
-            const sourceDir = path.join(storyDir, 'source');
-            const analysisPath = path.join(sourceDir, 'analysis.json');
-            
-            // Ensure source directory exists
-            if (!fs.existsSync(sourceDir)) {
-                fs.mkdirSync(sourceDir, { recursive: true });
-            }
-            
-            fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2), 'utf8');
-            return analysisPath;
-        } catch (error) {
-            console.error('Error saving audio analysis:', error);
-            throw error;
-        }
-    }
 
     /**
      * Read script JSON from filesystem

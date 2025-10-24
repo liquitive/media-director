@@ -71,6 +71,7 @@ export class StoryService {
 
         this.stories.set(story.id, story);
         this.createStoryDirectories(story.id);
+        this.createInitialMasterContext(story); // Create master_context.json at inception
         this.saveToWorkspace();
         return story;
     }
@@ -162,7 +163,7 @@ export class StoryService {
     }
 
     /**
-     * Update story
+     * Update story - syncs to both workspace cache and master_context.json
      */
     updateStory(id: string, updates: Partial<Story>): void {
         const story = this.stories.get(id);
@@ -170,12 +171,36 @@ export class StoryService {
             return;
         }
 
+        // Update in-memory story
         Object.assign(story, updates);
         story.modifiedAt = new Date().toISOString();
         this.stories.set(id, story);
+        
+        // Save to workspace state (cache)
         this.saveToWorkspace();
 
-        // Persist Script segments to disk when updated (including status changes like 'validated')
+        // Persist to master_context.json (source of truth) - ONLY narrative fields
+        const masterContextUpdates: any = {
+            storyName: story.name,
+            storyDescription: story.description,
+            storyContent: story.content,
+            transcription: story.transcription,
+            editorsNotes: story.editorsNotes
+        };
+        
+        // NOTE: Research is handled directly by handleSaveResearch() - not via Story updates
+        
+        if (updates.directorScript) {
+            masterContextUpdates.segments = updates.directorScript;
+        }
+        
+        if (updates.assetsUsed) {
+            masterContextUpdates.assetsUsed = updates.assetsUsed;
+        }
+        
+        this.updateMasterContext(id, masterContextUpdates);
+
+        // Persist individual segment files if directorScript was updated
         try {
             if (updates.directorScript && Array.isArray(updates.directorScript)) {
                 const storyDir = this.getStoryDirectory(id);
@@ -244,6 +269,12 @@ export class StoryService {
             
             story.directorScript[segmentIndex] = segmentData;
             story.modifiedAt = new Date().toISOString();
+            
+            // Update master_context.json with new segments array
+            this.updateMasterContext(id, {
+                segments: story.directorScript,
+                modifiedAt: story.modifiedAt
+            });
             
             console.log(`✓ Saved segment ${segmentIndex + 1} to disk and memory`);
         } catch (error) {
@@ -384,6 +415,186 @@ export class StoryService {
     }
 
     /**
+     * Get empty research structure for initial master context
+     */
+    private getEmptyResearchStructure(): any {
+        return {
+            historicalSources: [],
+            literarySources: [],
+            culturalContext: [],
+            artisticSources: [],
+            emotionalSignificance: '',
+            literalSignificance: '',
+            protagonistAnalysis: {
+                identityBackground: '',
+                physicalCharacteristics: '',
+                psychologicalSpiritualProfile: '',
+                relationshipsDynamics: '',
+                historicalCulturalContext: ''
+            },
+            locationAnalysis: {
+                geographicalSpecifics: '',
+                historicalContext: '',
+                culturalReligiousSignificance: '',
+                physicalDescription: '',
+                emotionalAtmosphere: ''
+            },
+            temporalContext: {
+                preciseTimeframe: '',
+                historicalPeriodCharacteristics: '',
+                culturalReligiousEnvironment: '',
+                artisticIntellectualClimate: ''
+            },
+            themesNarrativeAnalysis: {
+                surfaceNarrative: '',
+                deeperThemesMeanings: '',
+                literaryAnalysis: '',
+                emotionalPsychologicalJourney: ''
+            },
+            visualCinematicApproach: {
+                visualStyleAesthetic: '',
+                colorPaletteLighting: '',
+                costumeProductionDesign: '',
+                soundMusicDirection: ''
+            },
+            purposeSignificance: {
+                storytellersIntent: '',
+                historicalImpact: '',
+                contemporaryRelevance: '',
+                emotionalSpiritualSignificance: ''
+            }
+        };
+    }
+
+    /**
+     * Create initial master_context.json at story inception
+     * This is the single source of truth for story narrative/content data
+     */
+    private createInitialMasterContext(story: Story): void {
+        const storyDir = this.getStoryDirectory(story.id);
+        const sourceDir = path.join(storyDir, 'source');
+        
+        // Ensure source directory exists
+        if (!fs.existsSync(sourceDir)) {
+            fs.mkdirSync(sourceDir, { recursive: true });
+        }
+        
+        // ONLY story content/narrative data - NO technical execution settings
+        const initialContext: any = {
+            storyId: story.id,
+            storyName: story.name,
+            storyDescription: story.description,
+            storyContent: story.content,
+            inputType: story.inputType,
+            inputSource: story.inputSource,
+            createdAt: story.createdAt,
+            modifiedAt: story.modifiedAt,
+            sourceUrl: story.sourceUrl,
+            importedFrom: story.importedFrom,
+            // Initialize empty structures that will be populated
+            transcription: story.transcription,
+            research: this.getEmptyResearchStructure(),
+            audioAnalysis: null,
+            timingMap: null,
+            storyAssets: [], // Story-specific assets extracted from THIS story
+            assetsUsed: story.assetsUsed || [],
+            cinematographyGuidelines: null,
+            generationInstructions: null,
+            segments: [],
+            editorsNotes: story.editorsNotes || null
+        };
+        
+        const contextPath = path.join(sourceDir, 'master_context.json');
+        fs.writeFileSync(contextPath, JSON.stringify(initialContext, null, 2));
+        console.log(`✅ Created initial master_context.json for story ${story.id}`);
+    }
+
+    /**
+     * Convert MasterContextFile to Story object
+     * Used when loading stories from file system
+     */
+    private convertMasterContextToStory(context: any, directoryPath: string): Story {
+        return {
+            id: context.storyId,
+            name: context.storyName,
+            description: context.storyDescription,
+            directoryPath: directoryPath,
+            inputType: context.inputType,
+            inputSource: context.inputSource,
+            content: context.storyContent,
+            transcription: context.transcription,
+            directorScript: context.segments || [],
+            status: 'completed', // Default status when loading from file
+            createdAt: context.createdAt,
+            modifiedAt: context.modifiedAt,
+            progress: {
+                totalSegments: context.segments?.length || 0,
+                completedSegments: 0,
+                currentSegment: 0
+            },
+            outputFiles: {
+                segments: [],
+                finalVideo: '',
+                thumbnails: []
+            },
+            settings: {
+                model: 'sora-2',
+                resolution: '1920x1080'
+            },
+            sourceUrl: context.sourceUrl,
+            importedFrom: context.importedFrom,
+            assetsUsed: context.assetsUsed,
+            editorsNotes: context.editorsNotes
+        };
+    }
+
+    /**
+     * Update master_context.json with new data
+     * Only updates narrative/content fields, NOT technical execution fields
+     */
+    private updateMasterContext(id: string, updates: Partial<any>): void {
+        try {
+            const storyDir = this.getStoryDirectory(id);
+            const contextPath = path.join(storyDir, 'source', 'master_context.json');
+            
+            // Load current context
+            if (!fs.existsSync(contextPath)) {
+                console.warn(`master_context.json not found for story ${id}, cannot update`);
+                return;
+            }
+            
+            const currentContext = JSON.parse(fs.readFileSync(contextPath, 'utf8'));
+            
+            // Whitelist only narrative/content fields to prevent technical field leakage
+            const allowedUpdates: any = {};
+            const allowedFields = [
+                'storyName', 'storyDescription', 'storyContent', 'transcription',
+                'research', 'audioAnalysis', 'timingMap', 'storyAssets', 'assetsUsed',
+                'cinematographyGuidelines', 'generationInstructions', 'segments', 'editorsNotes'
+            ];
+            
+            for (const field of allowedFields) {
+                if (updates[field] !== undefined) {
+                    allowedUpdates[field] = updates[field];
+                }
+            }
+            
+            // Merge updates
+            const updatedContext = { 
+                ...currentContext, 
+                ...allowedUpdates, 
+                modifiedAt: new Date().toISOString() 
+            };
+            
+            // Save back to file
+            fs.writeFileSync(contextPath, JSON.stringify(updatedContext, null, 2));
+            console.log(`✓ Updated master_context.json for story ${id}`);
+        } catch (error) {
+            console.error(`Error updating master_context.json for story ${id}:`, error);
+        }
+    }
+
+    /**
      * Create story directories
      */
     createStoryDirectories(id: string): void {
@@ -466,25 +677,27 @@ export class StoryService {
     }
 
     /**
-     * Load stories from workspace
+     * Load stories from workspace state (cache) and file system (source of truth)
      */
     private async loadFromWorkspace(): Promise<void> {
+        // Load from workspace state (cache layer)
         const storiesData = this.context.workspaceState.get<Story[]>('sora.stories');
         if (storiesData) {
             this.stories.clear();
             storiesData.forEach(story => {
                 this.stories.set(story.id, story);
-                // Load segments from individual files (source of truth)
-                this.loadSegmentsFromDisk(story.id);
             });
         }
         
-        // Also discover stories from the file system
+        // Discover stories from file system (master_context.json is source of truth)
         await this.discoverStoriesFromFileSystem();
+        
+        // Update workspace cache with any newly discovered stories
+        await this.saveToWorkspace();
     }
 
     /**
-     * Discover stories from the file system
+     * Discover stories from the file system using master_context.json as source of truth
      */
     private async discoverStoriesFromFileSystem(): Promise<void> {
         try {
@@ -500,21 +713,21 @@ export class StoryService {
 
             for (const storyDir of storyDirs) {
                 const storyPath = path.join(soraOutputPath, storyDir);
-                const storyJsonPath = path.join(storyPath, 'story.json');
+                const masterContextPath = path.join(storyPath, 'source', 'master_context.json');
                 
-                if (fs.existsSync(storyJsonPath)) {
+                if (fs.existsSync(masterContextPath)) {
                     try {
-                        const storyData = JSON.parse(fs.readFileSync(storyJsonPath, 'utf8'));
-                        if (storyData.id && !this.stories.has(storyData.id)) {
-                            this.stories.set(storyData.id, storyData);
-                            this.loadSegmentsFromDisk(storyData.id);
+                        const contextData = JSON.parse(fs.readFileSync(masterContextPath, 'utf8'));
+                        if (contextData.storyId && !this.stories.has(contextData.storyId)) {
+                            const story = this.convertMasterContextToStory(contextData, storyPath);
+                            this.stories.set(story.id, story);
+                            console.log(`✓ Loaded story ${story.id} from master_context.json`);
                         }
                     } catch (error) {
-                        console.warn(`Failed to load story from ${storyJsonPath}:`, error);
+                        console.warn(`Failed to load story from ${masterContextPath}:`, error);
                     }
                 } else {
-                    // If no story.json, try to create a story from segment data
-                    await this.createStoryFromSegments(storyPath, storyDir);
+                    console.warn(`Skipping story directory ${storyDir}: no master_context.json found`);
                 }
             }
         } catch (error) {
@@ -522,71 +735,6 @@ export class StoryService {
         }
     }
 
-    /**
-     * Create a story from existing segments
-     */
-    private async createStoryFromSegments(storyPath: string, storyDir: string): Promise<void> {
-        try {
-            const segmentsDir = path.join(storyPath, 'segments');
-            if (!fs.existsSync(segmentsDir)) return;
-
-            const segmentFiles = fs.readdirSync(segmentsDir)
-                .filter(file => file.startsWith('segment_') && file.endsWith('.json'))
-                .sort((a, b) => {
-                    const aNum = parseInt(a.match(/segment_(\d+)\.json$/)?.[1] || '0');
-                    const bNum = parseInt(b.match(/segment_(\d+)\.json$/)?.[1] || '0');
-                    return aNum - bNum;
-                });
-
-            if (segmentFiles.length === 0) return;
-
-            // Read the first segment to get story ID
-            const firstSegmentPath = path.join(segmentsDir, segmentFiles[0]);
-            const firstSegment = JSON.parse(fs.readFileSync(firstSegmentPath, 'utf8'));
-            
-            if (!firstSegment.storyId) return;
-
-            // Check if story already exists
-            if (this.stories.has(firstSegment.storyId)) return;
-
-            // Create a minimal story object
-            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-            if (!workspaceRoot) return;
-            
-            const story: Story = {
-                id: firstSegment.storyId,
-                name: storyDir.replace(/_/g, ' '),
-                description: `Story discovered from file system`,
-                directoryPath: path.join(workspaceRoot, 'sora-output', 'stories', storyDir),
-                inputType: 'audio',
-                inputSource: '',
-                content: '',
-                directorScript: [],
-                status: 'completed',
-                createdAt: new Date().toISOString(),
-                modifiedAt: new Date().toISOString(),
-                progress: {
-                    totalSegments: 0,
-                    completedSegments: 0,
-                    currentSegment: 0
-                },
-                outputFiles: {
-                    segments: [],
-                    finalVideo: '',
-                    thumbnails: []
-                },
-                settings: {
-                    model: 'sora-2',
-                    resolution: '1920x1080'
-                }
-            };
-
-            this.stories.set(story.id, story);
-            this.loadSegmentsFromDisk(story.id);
-        } catch (error) {
-            console.warn(`Failed to create story from segments in ${storyPath}:`, error);
-        }
-    }
 
     /**
      * Export story to file
@@ -774,6 +922,7 @@ export class StoryService {
 
         this.stories.set(story.id, story);
         this.createStoryDirectories(story.id);
+        this.createInitialMasterContext(story); // Create master_context.json for imported story
         this.saveToWorkspace();
         return story;
     }

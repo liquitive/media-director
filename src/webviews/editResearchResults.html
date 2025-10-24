@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Research Results</title>
+    <style>
+        body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+            margin: 0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+
+        .header h1 {
+            color: var(--vscode-foreground);
+            margin: 0 0 10px 0;
+            font-size: 1.5em;
+        }
+
+        .header p {
+            color: var(--vscode-descriptionForeground);
+            margin: 0;
+            font-size: 0.9em;
+        }
+
+        .research-section {
+            margin-bottom: 25px;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .section-title {
+            color: var(--vscode-foreground);
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .btn-summarize {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: 1px solid var(--vscode-button-border);
+            padding: 6px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 0.85em;
+            transition: all 0.2s ease;
+        }
+
+        .btn-summarize:hover:not(:disabled) {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+
+        .btn-summarize:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .research-textarea {
+            width: 100%;
+            min-height: 200px;
+            padding: 12px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            line-height: 1.5;
+            border-radius: 3px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+
+        .research-textarea:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
+        }
+
+        .status {
+            padding: 8px 12px;
+            border-radius: 3px;
+            margin: 10px 0;
+            font-size: 0.9em;
+            display: none;
+        }
+
+        .status.success {
+            background-color: var(--vscode-testing-iconPassed);
+            color: var(--vscode-foreground);
+        }
+
+        .status.error {
+            background-color: var(--vscode-testing-iconFailed);
+            color: var(--vscode-foreground);
+        }
+
+        .auto-save-status {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: var(--vscode-badge-background);
+            color: var(--vscode-badge-foreground);
+            padding: 6px 12px;
+            border-radius: 3px;
+            font-size: 0.8em;
+            z-index: 1000;
+        }
+
+        .research-info {
+            background-color: var(--vscode-textBlockQuote-background);
+            border-left: 3px solid var(--vscode-textBlockQuote-border);
+            padding: 12px;
+            margin-bottom: 20px;
+            border-radius: 3px;
+        }
+
+        .research-info h3 {
+            margin: 0 0 8px 0;
+            color: var(--vscode-foreground);
+            font-size: 1em;
+        }
+
+        .research-info p {
+            margin: 0;
+            color: var(--vscode-descriptionForeground);
+            font-size: 0.9em;
+        }
+
+        .original-content {
+            margin-top: 15px;
+        }
+
+        .original-content h4 {
+            color: var(--vscode-foreground);
+            margin: 0 0 8px 0;
+            font-size: 0.9em;
+        }
+
+        .original-text {
+            background-color: var(--vscode-textCodeBlock-background);
+            border: 1px solid var(--vscode-panel-border);
+            padding: 10px;
+            border-radius: 3px;
+            font-family: var(--vscode-editor-font-family);
+            font-size: 0.85em;
+            line-height: 1.4;
+            max-height: 200px;
+            overflow-y: auto;
+            color: var(--vscode-foreground);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📚 Edit Research Results</h1>
+            <p>Review and customize the AI-generated research for this story. Changes will be used in script generation.</p>
+        </div>
+
+        <div class="research-info">
+            <h3>💡 About Research Editing</h3>
+            <p>This research text guides the AI in generating accurate and contextually appropriate video scripts. You can edit the content to better reflect your vision or use the Summarize button to refine it with AI assistance.</p>
+        </div>
+
+        <div class="research-section">
+            <div class="section-header">
+                <h2 class="section-title">Research Content</h2>
+                <button class="btn-summarize" data-field="researchContent" onclick="summarizeField('researchContent')">
+                    📝 Summarize
+                </button>
+            </div>
+            <textarea 
+                id="researchContent" 
+                class="research-textarea" 
+                placeholder="Research content will appear here after analysis..."
+            ></textarea>
+        </div>
+
+        <div class="original-content" id="originalContentSection" style="display: none;">
+            <h4>Original AI-Generated Research</h4>
+            <div id="originalContent" class="original-text"></div>
+        </div>
+
+        <div id="status" class="status"></div>
+    </div>
+
+    <div id="autoSaveStatus" class="auto-save-status" style="display: none;"></div>
+
+    <script>
+        let autoSaveTimeout;
+        let currentStoryId = null;
+
+        // Initialize auto-save
+        function setupAutoSave() {
+            const textarea = document.getElementById('researchContent');
+            textarea.addEventListener('input', function() {
+                clearTimeout(autoSaveTimeout);
+                autoSaveTimeout = setTimeout(() => {
+                    saveResearch();
+                }, 1000); // 1 second debounce
+            });
+        }
+
+        function saveResearch(showStatus = false) {
+            const content = document.getElementById('researchContent').value;
+            
+            updateAutoSaveStatus('💾 Saving...');
+            
+            vscode.postMessage({
+                command: 'saveResearch',
+                storyId: currentStoryId,
+                content: content,
+                showStatus: showStatus
+            });
+        }
+
+        function clearResearch() {
+            if (confirm('Are you sure you want to clear all research content?')) {
+                document.getElementById('researchContent').value = '';
+                updateAutoSaveStatus('Research cleared');
+            }
+        }
+
+        function summarizeField(fieldId) {
+            console.log('Summarize field called for:', fieldId);
+            const textarea = document.getElementById(fieldId);
+            const content = textarea.value.trim();
+            
+            if (!content) {
+                showStatus('Please enter some content to summarize', 'error');
+                return;
+            }
+            
+            // Find the button for this field using data attribute
+            const button = document.querySelector('button[data-field="' + fieldId + '"]');
+            if (button) {
+                button.disabled = true;
+                button.textContent = '⏳ Summarizing...';
+            }
+            
+            console.log('Sending summarize request for field:', fieldId, 'content length:', content.length);
+            
+            // Send to extension for AI processing
+            vscode.postMessage({
+                command: 'summarizeResearch',
+                fieldId: fieldId,
+                content: content
+            });
+        }
+
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+            statusDiv.style.display = 'block';
+            
+            setTimeout(() => {
+                statusDiv.textContent = '';
+                statusDiv.className = 'status';
+                statusDiv.style.display = 'none';
+            }, 3000);
+        }
+
+        function updateAutoSaveStatus(message) {
+            const autoSaveDiv = document.getElementById('autoSaveStatus');
+            if (autoSaveDiv) {
+                autoSaveDiv.textContent = message;
+                autoSaveDiv.style.display = 'block';
+                
+                if (message === '💾 Saving...') {
+                    setTimeout(() => {
+                        autoSaveDiv.style.display = 'none';
+                    }, 2000);
+                }
+            }
+        }
+
+        // Handle messages from extension
+        window.addEventListener('message', event => {
+            const message = event.data;
+            
+            switch (message.command) {
+                case 'loadResearch':
+                    currentStoryId = message.storyId;
+                    if (message.research) {
+                        document.getElementById('researchContent').value = message.research.content || '';
+                        
+                        // Show original content if it exists and is different
+                        if (message.research.originalContent && 
+                            message.research.originalContent !== message.research.content) {
+                            document.getElementById('originalContent').textContent = message.research.originalContent;
+                            document.getElementById('originalContentSection').style.display = 'block';
+                        }
+                    }
+                    setupAutoSave();
+                    break;
+                    
+                case 'saveResult':
+                    if (message.showStatus) {
+                        if (message.success) {
+                            showStatus('Research results saved successfully!', 'success');
+                        } else {
+                            showStatus('Failed to save research: ' + message.error, 'error');
+                        }
+                    }
+                    updateAutoSaveStatus('✅ Saved');
+                    break;
+                    
+                case 'summarizeResult':
+                    // Re-enable the button
+                    const button = document.querySelector('button[data-field="' + message.fieldId + '"]');
+                    if (button) {
+                        button.disabled = false;
+                        button.textContent = '📝 Summarize';
+                    }
+                    
+                    if (message.success) {
+                        // Update the textarea with the summarized content
+                        document.getElementById(message.fieldId).value = message.summarizedContent;
+                        showStatus('Research content summarized successfully!', 'success');
+                    } else {
+                        showStatus('Failed to summarize: ' + message.error, 'error');
+                    }
+                    break;
+            }
+        });
+
+        // Initialize
+        setupAutoSave();
+    </script>
+</body>
+</html>
+

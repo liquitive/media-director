@@ -41,7 +41,7 @@ export interface ValidationContext {
     storyId: string;
     transcription: string;
     research?: string;
-    assets?: any[];
+    storyAssets?: any[]; // Renamed from 'assets' to match master_context.json structure
     segments?: any[];
 }
 

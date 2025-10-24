@@ -65,6 +65,24 @@ export class ExecutionService {
             this.progressManager.startTask(segmentTaskId, `🎥 Generate Segment ${segmentIndex + 1}: "${segmentName}"`, parentTaskId);
             
             try {
+                // Skip if segment already completed with video file
+                if (segment.status === 'completed' && segment.videoPath) {
+                    const videoExists = fs.existsSync(segment.videoPath);
+                    if (videoExists) {
+                        logger.info(`⏭️  Skipping segment ${segmentIndex + 1} - already completed with video at: ${segment.videoPath}`);
+                        this.progressManager.updateTask(segmentTaskId, 'success', '✓ Already completed (skipped)', 100);
+                        
+                        // Update overall progress
+                        if (parentTaskId) {
+                            const overallProgress = Math.round(((i + 1) / indices.length) * 100);
+                            this.progressManager.updateTask(parentTaskId, 'running', `Skipped segment ${i + 1} of ${indices.length} (already completed)...`, overallProgress);
+                        }
+                        continue; // Skip to next segment
+                    } else {
+                        logger.warn(`⚠️  Segment ${segmentIndex + 1} marked completed but video file missing - will regenerate`);
+                    }
+                }
+                
                 // Update segment progress: Starting
                 this.progressManager.updateTask(segmentTaskId, 'running', 'Calling Sora API for video generation...', 0);
                 
@@ -79,7 +97,7 @@ export class ExecutionService {
                 const shouldUseRemix = continuityInfo.shouldUseRemix;
                 const remixVideoId = continuityInfo.remixVideoId;
                 
-                // Generate video for this segment using Sora API
+                // Generate video for this segment using Sora API with progress tracking
                 const videoResult = await this.openaiService.generateVideoSegment(
                     segment.prompt,
                     segment.duration,
@@ -89,7 +107,11 @@ export class ExecutionService {
                     undefined, // imagePaths
                     undefined, // continuityFrame
                     story.directoryPath, // Use story's stored directory path
-                    remixVideoId
+                    remixVideoId,
+                    // Progress callback to update UI in real-time
+                    (progress: number, message: string) => {
+                        this.progressManager.updateTask(segmentTaskId, 'running', message, progress);
+                    }
                 );
                 
                 // Update segment progress: Processing
@@ -123,9 +145,16 @@ export class ExecutionService {
                 this.progressManager.failTask(segmentTaskId, `Video generation failed: ${errorMessage}`);
                 logger.error(`Failed to generate video for segment ${segmentIndex + 1}:`, error);
                 
-                // Don't throw error - continue with other segments
-                logger.warn(`⚠️ Skipping segment ${segmentIndex + 1} due to generation failure, continuing with remaining segments...`);
-                continue;
+                // Fail parent task and stop immediately
+                if (parentTaskId) {
+                    this.progressManager.failTask(parentTaskId, `Segment ${segmentIndex + 1} generation failed: ${errorMessage}`);
+                }
+                
+                // Update story status to error
+                this.storyService.updateStory(storyId, { status: 'error' });
+                
+                // Critical error - stop all generation immediately
+                throw new Error(`Video generation failed for segment ${segmentIndex + 1}: ${errorMessage}`);
             }
         }
         
@@ -391,15 +420,37 @@ export class ExecutionService {
 
     /**
      * Extract video ID from video path for remix API
+     * Handles paths like: /path/to/video_68fc026b0a788193bf3fd3954a118b3b0085938026f36c25_2025-10-24T22-51-16-284Z.mp4
+     * Returns: video_68fc026b0a788193bf3fd3954a118b3b0085938026f36c25 (max 64 chars)
      */
     private extractVideoIdFromPath(videoPath: string): string | undefined {
-        // Extract video ID from path or return the path itself if it's already an ID
-        if (videoPath.startsWith('video_')) {
-            return videoPath;
+        // Get filename without extension
+        const filename = path.basename(videoPath, path.extname(videoPath));
+        
+        // If it's already a clean video ID (starts with video_ and is <=64 chars without timestamp), return it
+        if (filename.startsWith('video_') && filename.length <= 64 && !filename.includes('_2025')) {
+            return filename;
         }
         
-        // Try to extract from filename
-        const filename = path.basename(videoPath, path.extname(videoPath));
+        // Extract video ID from filename with pattern: video_{hex_hash}_{timestamp}
+        // Sora video IDs: video_ + 50-char hex hash = ~56 chars total
+        // Match: video_ followed by hex chars, stopping before underscore+timestamp
+        const match = filename.match(/^(video_[a-f0-9]+?)(?:_\d{4}-|$)/);
+        if (match && match[1].length <= 64) {
+            return match[1];
+        }
+        
+        // Fallback: extract any video_[hex] pattern up to 64 chars
+        const idMatch = filename.match(/^(video_[a-f0-9]{40,60})/);
+        if (idMatch && idMatch[1].length <= 64) {
+            return idMatch[1];
+        }
+        
+        // Last resort: if starts with video_, take first 64 chars
+        if (filename.startsWith('video_')) {
+            return filename.substring(0, 64);
+        }
+        
         return filename;
     }
 

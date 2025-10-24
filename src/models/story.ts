@@ -24,6 +24,24 @@ export interface Segment {
     };
 }
 
+/**
+ * Story represents the in-memory and workspace-cached view of a story.
+ * 
+ * DATA ARCHITECTURE:
+ * - Narrative/content data: Persisted in master_context.json (source of truth)
+ *   - name, description, content, transcription, editorsNotes
+ *   - research, audioAnalysis, timingMap, storyAssets, assetsUsed
+ *   - segments (directorScript), cinematographyGuidelines
+ * 
+ * - Technical/execution data: Persisted in workspace state (cache)
+ *   - status, progress, outputFiles, settings
+ *   - directoryPath, metadata, sourceFiles
+ * 
+ * The Story object is reconstructed on load by:
+ * 1. Reading narrative data from master_context.json
+ * 2. Reading technical data from workspace state
+ * 3. Reconstructing missing fields with defaults
+ */
 export interface Story {
     id: string;
     name: string;
@@ -81,6 +99,8 @@ export interface Story {
         createdAt?: string;
         modifiedAt?: string;
     };
+    // NOTE: Research is ONLY stored in master_context.json, NOT in Story object
+    // Load/save research directly from/to master_context.json
     generationConfig?: {
         model: 'sora' | 'sora-turbo';
         visualStyle: string;

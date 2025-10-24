@@ -127,7 +127,7 @@ export class SegmentCorrectionParticipant {
         stream.markdown('### 🔄 Starting Regeneration Process...\n\n');
         
         try {
-            stream.markdown('**Step 1/6:** Updating research in `analysis.json`...\n');
+            stream.markdown('**Step 1/6:** Updating research in `master_context.json`...\n');
             stream.markdown('**Step 2/6:** Deleting old script and segment files...\n');
             stream.markdown('**Step 3/6:** Re-extracting assets with corrected research...\n');
             stream.markdown('**Step 4/6:** Regenerating Script...\n');
@@ -248,7 +248,7 @@ export class SegmentCorrectionParticipant {
             });
             
             stream.markdown(`Instead of manually fixing ${result.issues.reduce((sum, i) => sum + i.segmentIds.length, 0)} segment occurrences, I can:\n\n`);
-            stream.markdown(`1. Update the research in \`analysis.json\` to emphasize the correct approach\n`);
+            stream.markdown(`1. Update the research in \`master_context.json\` to emphasize the correct approach\n`);
             stream.markdown(`2. Delete old script and segment files\n`);
             stream.markdown(`3. Re-extract assets with corrected research context\n`);
             stream.markdown(`4. ReGenerate Script from scratch\n`);
@@ -667,7 +667,7 @@ export class SegmentCorrectionParticipant {
      * This is FAR more efficient than manually correcting 58+ segments!
      * 
      * Flow:
-     * 1. Update research in analysis.json with corrections/emphasis
+     * 1. Update research in master_context.json with corrections/emphasis
      * 2. Delete old script.json and segment_N.json files
      * 3. Re-extract assets (with corrected research context)
      * 4. Re-Generate Script (with corrected research & assets)
@@ -683,23 +683,26 @@ export class SegmentCorrectionParticipant {
         }
 
         const storyDir = this.storyService.getStoryDirectory(storyId);
-        const analysisPath = path.join(storyDir, 'source', 'analysis.json');
+        const masterContextPath = path.join(storyDir, 'source', 'master_context.json');
 
-        // 1. Update research in analysis.json
+        // 1. Update research in master_context.json
         logger.info('📝 Updating research with corrections...');
-        if (!fs.existsSync(analysisPath)) {
-            throw new Error('analysis.json not found');
+        if (!fs.existsSync(masterContextPath)) {
+            throw new Error('master_context.json not found');
         }
 
-        const analysisData = JSON.parse(fs.readFileSync(analysisPath, 'utf-8'));
-        const originalResearch = analysisData.researchText || '';
+        const masterContext = JSON.parse(fs.readFileSync(masterContextPath, 'utf-8'));
+        const originalResearch = typeof masterContext.research === 'string' 
+            ? masterContext.research 
+            : '';
         
         // Prepend corrections to research (so AI sees them first!)
         const updatedResearch = `CRITICAL CORRECTIONS AND EMPHASIS:\n${researchCorrections}\n\n---\n\n${originalResearch}`;
-        analysisData.researchText = updatedResearch;
+        masterContext.research = updatedResearch;
+        masterContext.modifiedAt = new Date().toISOString();
         
-        fs.writeFileSync(analysisPath, JSON.stringify(analysisData, null, 2));
-        logger.info('✅ Research updated in analysis.json');
+        fs.writeFileSync(masterContextPath, JSON.stringify(masterContext, null, 2));
+        logger.info('✅ Research updated in master_context.json');
 
         // 2. Delete old script and segment files
         logger.info('🗑️ Deleting old script and segment files...');
@@ -723,9 +726,20 @@ export class SegmentCorrectionParticipant {
         // 3. Re-extract assets (will use the updated research context)
         logger.info('🎨 Re-extracting assets with corrected research...');
         
+        // Read the updated master context for asset extraction
+        const masterContextForAssets = JSON.parse(fs.readFileSync(masterContextPath, 'utf-8'));
+        const analysisDataForExtraction = {
+            title: story.name,
+            context: story.description,
+            transcription: masterContextForAssets.transcription || story.transcription || story.content,
+            researchText: typeof masterContextForAssets.research === 'string' 
+                ? masterContextForAssets.research 
+                : JSON.stringify(masterContextForAssets.research)
+        };
+        
         const extractedAssets = await this.openaiService.extractAssets(
             story.transcription || '',
-            analysisData
+            analysisDataForExtraction
         );
         
         // Save extracted assets
@@ -740,22 +754,27 @@ export class SegmentCorrectionParticipant {
 
         // 4. Re-Generate Script with corrected context
         logger.info('🎬 Regenerating Script...');
-        const timingMapPath = path.join(storyDir, 'source', 'timing_map.json');
         
-        if (!fs.existsSync(timingMapPath)) {
-            throw new Error('timing_map.json not found - cannot regenerate script');
+        // Read updated master_context.json
+        const updatedMasterContext = JSON.parse(fs.readFileSync(masterContextPath, 'utf-8'));
+        
+        if (!updatedMasterContext.timingMap) {
+            throw new Error('timingMap not found in master_context.json - cannot regenerate script');
         }
         
-        const timingMap = JSON.parse(fs.readFileSync(timingMapPath, 'utf-8'));
+        const timingMap = updatedMasterContext.timingMap;
         
         // Get full asset library for character matching
         const fullAssetLibrary = await this.assetService.getAllAssets();
         
-        // Use Script genration with corrected research
+        // Use Script generation with corrected research from master_context
         const analysis = {
             title: story.name,
             context: story.description,
-            transcription: story.transcription || story.content,
+            transcription: updatedMasterContext.transcription || story.transcription || story.content,
+            researchText: typeof updatedMasterContext.research === 'string' 
+                ? updatedMasterContext.research 
+                : JSON.stringify(updatedMasterContext.research),
             visualStyle: 'naturalistic',
             colorPalette: 'earth tones',
             mainCharacter: 'protagonist',

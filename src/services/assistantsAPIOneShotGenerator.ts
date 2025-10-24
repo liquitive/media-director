@@ -79,7 +79,7 @@ export class AssistantsAPIOneShotGenerator {
         },
         violations: {
           type: 'array',
-          description: 'Names used that are not present in context.assets[].name',
+          description: 'Names used that are not present in context.storyAssets[].name',
           items: { type: 'string' }
         },
         required: ['segments']
@@ -118,14 +118,14 @@ export class AssistantsAPIOneShotGenerator {
       const fileContent = fs.readFileSync(contextFilePath, 'utf-8');
       const contextData = JSON.parse(fileContent);
       this.errorLogger.logInfo(storyId, `Context file contains ${contextData.segments?.length || 0} segments`);
-      this.errorLogger.logInfo(storyId, `Context file contains ${contextData.compressedAssets?.length || 0} assets`);
+      this.errorLogger.logInfo(storyId, `Context file contains ${contextData.storyAssets?.length || 0} assets`);
       this.errorLogger.logInfo(storyId, `Context file research text length: ${contextData.research?.length || 0} chars`);
       this.errorLogger.logInfo(storyId, `Context file transcription: ${contextData.transcription?.substring(0, 200)}...`);
       if (contextData.segments && contextData.segments.length > 0) {
         this.errorLogger.logInfo(storyId, `First segment: ${JSON.stringify(contextData.segments[0], null, 2).substring(0, 300)}...`);
       }
-      if (contextData.compressedAssets && contextData.compressedAssets.length > 0) {
-        this.errorLogger.logInfo(storyId, `First asset: ${JSON.stringify(contextData.compressedAssets[0], null, 2).substring(0, 300)}...`);
+      if (contextData.storyAssets && contextData.storyAssets.length > 0) {
+        this.errorLogger.logInfo(storyId, `First asset: ${JSON.stringify(contextData.storyAssets[0], null, 2).substring(0, 300)}...`);
       }
       
       progressManager?.updateTask(parentTaskId, 'running', `Read master context: ${contextData.segments?.length} segments`);
@@ -161,7 +161,7 @@ export class AssistantsAPIOneShotGenerator {
         storyContent: parsed.storyContent,
         transcription: parsed.transcription,
         research: parsed.research,
-        compressedAssets: parsed.compressedAssets,
+        storyAssets: parsed.storyAssets,
         cinematographyGuidelines: parsed.cinematographyGuidelines,
         generationInstructions: parsed.generationInstructions,
         segments: parsed.segments,
@@ -369,7 +369,7 @@ export class AssistantsAPIOneShotGenerator {
       const fileContent = fs.readFileSync(filePath, 'utf-8');
       const contextData = JSON.parse(fileContent);
       this.errorLogger.logInfo('system', `Context file contains ${contextData.segments?.length || 0} segments`);
-      this.errorLogger.logInfo('system', `Context file contains ${contextData.compressedAssets?.length || 0} assets`);
+      this.errorLogger.logInfo('system', `Context file contains ${contextData.storyAssets?.length || 0} assets`);
       this.errorLogger.logInfo('system', `Context file research text length: ${contextData.research?.length || 0} chars`);
       this.errorLogger.logInfo('system', `Context file transcription: ${contextData.transcription?.substring(0, 200)}...`);
       
@@ -437,9 +437,9 @@ export class AssistantsAPIOneShotGenerator {
 
 When you receive a request:
 1. Use file_search to read the master_context.json file thoroughly
-2. Extract ALL assets (characters, locations, items) from context.assets[]
+2. Extract ALL assets (characters, locations, items) from context.storyAssets[]
 3. Use ONLY those exact asset names - never invent characters from your training data
-4. Use the visual attributes from context.assets[].visual_attributes
+4. Use the visual attributes from context.storyAssets[].visual_attributes
 5. Match segment text from context.segments[].text
 6. Follow themes from context.research
 
@@ -472,7 +472,7 @@ If editor's notes are provided, incorporate them into your analysis:
 - Narrative Focus: Align with specified themes and direction
 - Technical Notes: Incorporate any technical requirements
 
-CRITICAL: You will be penalized for using character names not in the context file (like "Jessica", "Miro", "Oliver"). Only use assets explicitly defined in context.assets[].
+CRITICAL: You will be penalized for using character names not in the context file (like "Jessica", "Miro", "Oliver"). Only use assets explicitly defined in context.storyAssets[].
 
 Always call generateSegments. Put the entire result only in the function arguments as strict JSON. No markdown, no comments, no trailing text.
 
@@ -500,15 +500,15 @@ CRITICAL: You MUST generate a segment for EVERY segment in context.segments[]. D
     return `Read the context file that has been provided to you via file search.
 
 The context file contains:
-- context.assets[] - All characters, locations, and items with detailed visual attributes
+- context.storyAssets[] - All characters, locations, and items with detailed visual attributes
 - context.segments[] - All video segments with timing and transcribed text  
 - context.research - Thematic analysis and narrative guidance
 
 For EVERY segment in context.segments[], generate a finalPrompt that:
 
-1. Uses ONLY characters/locations/items defined in context.assets[]
-2. Uses the EXACT names from context.assets[].name 
-3. Incorporates visual details from context.assets[].visual_attributes
+1. Uses ONLY characters/locations/items defined in context.storyAssets[]
+2. Uses the EXACT names from context.storyAssets[].name 
+3. Incorporates visual details from context.storyAssets[].visual_attributes
 4. Matches the segment's context.segments[].text
 5. Follows themes from context.research
 6. Maximum 400 tokens per finalPrompt

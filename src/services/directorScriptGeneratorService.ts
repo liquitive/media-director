@@ -91,10 +91,9 @@ export class DirectorScriptGeneratorService {
                 transcriptionResult = await this.openaiService.transcribeAudio(audioFilePath);
             }
             
-            // Save transcript
+            // Update story with transcription (saved to master_context.json via updateStory)
             this.progressManager.updateTask(transcriptTaskId, 'running', 'Saving transcript...');
             const storyDir = this.storyService.getStoryDirectory(storyId);
-            const transcriptPath = FileManager.saveTranscription(transcriptionResult.text, storyDir);
             
             // Update story
             story.transcription = transcriptionResult.text;
@@ -126,14 +125,9 @@ export class DirectorScriptGeneratorService {
             
             const timingMap = await audioAnalysisService.analyzeAudioTiming(audioFilePath, transcriptionResult);
             
-            // Save timing map
-            this.progressManager.updateTask(timingTaskId, 'running', 'Saving timing map...');
-            const storyDir = this.storyService.getStoryDirectory(storyId);
-            const sourceDir = path.join(storyDir, 'source');
-            await fs.promises.mkdir(sourceDir, { recursive: true });
-            
-            const timingPath = path.join(sourceDir, 'timing_map.json');
-            await fs.promises.writeFile(timingPath, JSON.stringify(timingMap, null, 2));
+            // Immediately sync timing map to master_context.json
+            this.progressManager.updateTask(timingTaskId, 'running', 'Saving timing map to master_context...');
+            await this.syncToMasterContext(storyId, { timingMap });
             
             this.progressManager.updateTask(timingTaskId, 'success', `Generated timing map with ${timingMap.segments?.length || 0} segments`);
             logger.info(`Timing map generated for story ${storyId}`);
@@ -154,20 +148,40 @@ export class DirectorScriptGeneratorService {
         this.progressManager.startTask(researchTaskId, 'Deep Story Research', parentTaskId);
         
         try {
+            const story = this.storyService.getStory(storyId);
+            
+            // Check if research already exists in master_context.json (user may have edited it)
+            try {
+                const storyDir = this.storyService.getStoryDirectory(storyId);
+                const masterContextPath = path.join(storyDir, 'source', 'master_context.json');
+                
+                if (fs.existsSync(masterContextPath)) {
+                    const masterContext = JSON.parse(fs.readFileSync(masterContextPath, 'utf8'));
+                    if (masterContext.research) {
+                        const existingResearch = typeof masterContext.research === 'string' 
+                            ? masterContext.research 
+                            : JSON.stringify(masterContext.research);
+                        
+                        this.progressManager.updateTask(researchTaskId, 'success', `Using existing research (${existingResearch.length} characters)`);
+                        logger.info(`Using existing research from master_context.json for story ${storyId}`);
+                        
+                        return existingResearch;
+                    }
+                }
+            } catch (error) {
+                logger.warn(`Could not load existing research from master_context.json: ${error}`);
+                // Continue to generate new research
+            }
+            
+            // Generate new research if no edited version exists
             this.progressManager.updateTask(researchTaskId, 'running', 'Researching historical and cultural context...');
             
-            const story = this.storyService.getStory(storyId);
             const storyResearchService = new StoryResearchService(this.aiService);
             const researchText = await storyResearchService.performDeepResearch(transcription, storyId, story?.editorsNotes);
             
-            // Save research
-            this.progressManager.updateTask(researchTaskId, 'running', 'Saving research results...');
-            const storyDir = this.storyService.getStoryDirectory(storyId);
-            const sourceDir = path.join(storyDir, 'source');
-            await fs.promises.mkdir(sourceDir, { recursive: true});
-            
-            const researchPath = path.join(sourceDir, 'research.txt');
-            await fs.promises.writeFile(researchPath, researchText);
+            // Immediately sync research to master_context.json
+            this.progressManager.updateTask(researchTaskId, 'running', 'Saving research to master_context...');
+            await this.syncToMasterContext(storyId, { research: researchText });
             
             this.progressManager.updateTask(researchTaskId, 'success', `Research completed (${researchText.length} characters)`);
             logger.info(`Research completed for story ${storyId}`);
@@ -317,6 +331,10 @@ export class DirectorScriptGeneratorService {
                 logger.info(`Skipping image generation for ${imageCount} assets (disabled in settings)`);
             }
             
+            // Immediately sync extracted assets to master_context.json as storyAssets
+            this.progressManager.updateTask(assetsTaskId, 'running', 'Saving assets to master_context...');
+            await this.syncToMasterContext(storyId, { storyAssets: extractedAssets });
+            
             this.progressManager.updateTask(assetsTaskId, 'success', `Extracted ${extractedAssets.length} assets`);
             logger.info(`Assets extracted for story ${storyId}`);
             
@@ -329,14 +347,27 @@ export class DirectorScriptGeneratorService {
     }
 
     /**
-     * Generates the master context file
+     * Updates the existing master context file with analysis data
+     * Master context is created at story inception, this populates it
      */
     async generateMasterContext(storyId: string, transcription: string, timingMap: any, audioAnalysis: any, extractedAssets: any[], researchText: string, parentTaskId: string): Promise<string> {
         const contextTaskId = `${storyId}_context`;
-        this.progressManager.startTask(contextTaskId, 'Building Master Context', parentTaskId);
+        this.progressManager.startTask(contextTaskId, 'Updating Master Context', parentTaskId);
         
         try {
-            this.progressManager.updateTask(contextTaskId, 'running', 'Assembling master context...');
+            const storyDir = this.storyService.getStoryDirectory(storyId);
+            const contextPath = path.join(storyDir, 'source', 'master_context.json');
+            
+            // Load existing master context
+            let masterContext: any;
+            if (fs.existsSync(contextPath)) {
+                masterContext = JSON.parse(await fs.promises.readFile(contextPath, 'utf-8'));
+                this.progressManager.updateTask(contextTaskId, 'running', 'Existing context loaded, updating...');
+            } else {
+                throw new Error('master_context.json not found. It should have been created at story inception.');
+            }
+            
+            this.progressManager.updateTask(contextTaskId, 'running', 'Assembling master context updates...');
             
             // Use segments from timing map, adding segment IDs and used assets
             const segments = (timingMap.segments || []).map((seg: any, index: number) => ({
@@ -353,39 +384,34 @@ export class DirectorScriptGeneratorService {
             }));
             
             // Group extracted assets by type (these are story-specific assets)
-            const storyAssets = {
-                characters: extractedAssets.filter((a: any) => a.type === 'character'),
-                locations: extractedAssets.filter((a: any) => a.type === 'location'),
-                items: extractedAssets.filter((a: any) => a.type === 'item'),
-                vehicles: extractedAssets.filter((a: any) => a.type === 'vehicle'),
-                animals: extractedAssets.filter((a: any) => a.type === 'animal'),
-                other: extractedAssets.filter((a: any) => a.type === 'other')
-            };
+            const storyAssets = extractedAssets.map((asset: any) => ({
+                id: asset.id,
+                type: asset.type,
+                name: asset.name,
+                compressedAnchor: asset.compressedAnchor || asset.description,
+                visualKeywords: asset.visualKeywords || [],
+                fullDescription: asset.description || asset.fullDescription || ''
+            }));
             
-            const masterContext = {
-                version: '1.0',
-                storyId: storyId,
-                createdAt: new Date().toISOString(),
-                transcription: transcription,
-                research: researchText,
-                audioAnalysis: audioAnalysis,
-                timingMap: timingMap,
-                assets: storyAssets,  // Only assets extracted from this story's transcript
-                segments: segments
-            };
+            // Update master context with new data (ONLY narrative fields)
+            masterContext.transcription = transcription;
+            masterContext.research = researchText;
+            masterContext.audioAnalysis = audioAnalysis;
+            masterContext.timingMap = timingMap;
+            masterContext.storyAssets = storyAssets;  // Only assets extracted from this story
+            masterContext.segments = segments;
+            masterContext.modifiedAt = new Date().toISOString();
             
-            // Save master context
+            // Save updated master context
             this.progressManager.updateTask(contextTaskId, 'running', 'Saving master context...');
-            const storyDir = this.storyService.getStoryDirectory(storyId);
-            const contextPath = path.join(storyDir, 'source', 'master_context.json');
             await fs.promises.writeFile(contextPath, JSON.stringify(masterContext, null, 2));
             
-            this.progressManager.updateTask(contextTaskId, 'success', `Master context created with ${segments.length} segments`);
-            logger.info(`Master context created for story ${storyId} with ${segments.length} segments`);
+            this.progressManager.updateTask(contextTaskId, 'success', `Master context updated with ${segments.length} segments`);
+            logger.info(`Master context updated for story ${storyId} with ${segments.length} segments`);
             
             return contextPath;
         } catch (error: any) {
-            logger.error('Master context creation failed', error);
+            logger.error('Master context update failed', error);
             this.progressManager.updateTask(contextTaskId, 'failed', `Master context failed: ${error.message}`);
             throw error;
         }
@@ -529,30 +555,21 @@ export class DirectorScriptGeneratorService {
             this.progressManager.startTask(audioAnalysisTaskId, 'Analyzing Audio', mainTaskId);
             const audioAnalysis = await this.audioService.analyzeAudio(audioFilePath);
             
-            // Integrate research into audio analysis
-            const enhancedAnalysis = {
-                ...audioAnalysis,
-                researchText: researchText
-            };
-            
-            // Save audio analysis
-            const storyDir = this.storyService.getStoryDirectory(storyId);
-            const sourceDir = path.join(storyDir, 'source');
-            await fs.promises.mkdir(sourceDir, { recursive: true });
-            const analysisPath = path.join(sourceDir, 'analysis.json');
-            await fs.promises.writeFile(analysisPath, JSON.stringify(enhancedAnalysis, null, 2));
+            // Immediately sync audio analysis to master_context.json (without researchText - that's already saved separately)
+            this.progressManager.updateTask(audioAnalysisTaskId, 'running', 'Saving audio analysis to master_context...');
+            await this.syncToMasterContext(storyId, { audioAnalysis });
             
             this.progressManager.updateTask(audioAnalysisTaskId, 'success', 'Audio analysis complete');
             
-            // Step 5: Assets
-            const extractedAssets = await this.generateStoryAssets(storyId, transcription, enhancedAnalysis, researchText, mainTaskId);
+            // Step 5: Assets (pass audioAnalysis and researchText separately)
+            const extractedAssets = await this.generateStoryAssets(storyId, transcription, audioAnalysis, researchText, mainTaskId);
             
             // Step 6: Master Context
             const contextFilePath = await this.generateMasterContext(
                 storyId,
                 transcription,
                 timingMap,
-                enhancedAnalysis,
+                audioAnalysis,
                 extractedAssets,
                 researchText,
                 mainTaskId
@@ -658,6 +675,49 @@ export class DirectorScriptGeneratorService {
             this.progressManager.updateTask(mainTaskId, 'failed', `Regeneration failed: ${error.message}`);
             Notifications.error(`Script regeneration failed: ${error.message}`);
             throw error;
+        }
+    }
+
+    /**
+     * Sync data to master_context.json in real-time
+     * This ensures master_context is always up-to-date as data is acquired
+     */
+    private async syncToMasterContext(storyId: string, updates: any): Promise<void> {
+        try {
+            const storyDir = this.storyService.getStoryDirectory(storyId);
+            const masterContextPath = path.join(storyDir, 'source', 'master_context.json');
+            
+            // Ensure source directory exists
+            const sourceDir = path.join(storyDir, 'source');
+            if (!fs.existsSync(sourceDir)) {
+                await fs.promises.mkdir(sourceDir, { recursive: true });
+            }
+            
+            // Read existing master_context.json (or create empty one)
+            let masterContext: any = {};
+            if (fs.existsSync(masterContextPath)) {
+                const content = await fs.promises.readFile(masterContextPath, 'utf-8');
+                masterContext = JSON.parse(content);
+            }
+            
+            // Merge updates
+            masterContext = {
+                ...masterContext,
+                ...updates,
+                modifiedAt: new Date().toISOString()
+            };
+            
+            // Write back to file
+            await fs.promises.writeFile(
+                masterContextPath,
+                JSON.stringify(masterContext, null, 2),
+                'utf-8'
+            );
+            
+            logger.info(`Synced to master_context.json: ${Object.keys(updates).join(', ')}`);
+        } catch (error) {
+            logger.error('Failed to sync to master_context.json:', error);
+            // Don't throw - we don't want to break the workflow if sync fails
         }
     }
 }

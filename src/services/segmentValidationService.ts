@@ -52,8 +52,8 @@ export class SegmentValidationService {
             : 'No research available';
 
         // Format assets for context
-        const assetsContext = context.assets && context.assets.length > 0
-            ? `\nEXTRACTED ASSETS:\n${JSON.stringify(context.assets.map(a => ({
+        const assetsContext = context.storyAssets && context.storyAssets.length > 0
+            ? `\nEXTRACTED ASSETS:\n${JSON.stringify(context.storyAssets.map(a => ({
                 id: a.id,
                 name: a.name,
                 type: a.type,

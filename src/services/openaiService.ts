@@ -11,8 +11,10 @@ import { logger } from '../utils/logger';
 
 export class OpenAIService {
     private client: OpenAI;
+    private apiKey: string;
 
     constructor(apiKey: string) {
+        this.apiKey = apiKey;
         this.client = new OpenAI({ apiKey });
     }
 
@@ -65,7 +67,8 @@ export class OpenAIService {
         imagePaths?: string | string[],
         continuityFrame?: string,
         storyDirectoryPath?: string,
-        remixVideoId?: string
+        remixVideoId?: string,
+        progressCallback?: (progress: number, message: string) => void
     ): Promise<{ id: string; url?: string }> {
         try {
             logger.info(`Original prompt length: ${prompt.length} chars`);
@@ -148,9 +151,12 @@ export class OpenAIService {
             }
             
             // Try video generation with retry logic
-            const completedVideo = await this.generateVideoWithRetry(videoParams, 3);
+            const completedVideo = await this.generateVideoWithRetry(videoParams, 3, progressCallback);
             
             // Download the video to local storage
+            if (progressCallback) {
+                progressCallback(90, 'Downloading video...');
+            }
             const localVideoPath = await this.downloadVideoToLocal(completedVideo.id, completedVideo.url, storyDirectoryPath);
             
             return {
@@ -404,18 +410,26 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
     /**
      * Generate video with retry logic for API failures
      */
-    private async generateVideoWithRetry(videoParams: any, maxRetries: number = 3): Promise<{ id: string; url?: string }> {
+    private async generateVideoWithRetry(videoParams: any, maxRetries: number = 3, progressCallback?: (progress: number, message: string) => void): Promise<{ id: string; url?: string }> {
         let lastError: any;
         
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 logger.info(`🎬 Attempt ${attempt}/${maxRetries}: Creating video with Sora API...`);
                 
+                if (progressCallback) {
+                    progressCallback(5, `Submitting to Sora API (attempt ${attempt}/${maxRetries})...`);
+                }
+                
                 const video = await (this.client as any).videos.create(videoParams);
                 logger.info(`✅ Video creation initiated: ${video.id}`);
                 
+                if (progressCallback) {
+                    progressCallback(10, 'Video queued, waiting for generation...');
+                }
+                
                 // Poll for completion
-                const completedVideo = await this.pollVideoStatus(video.id);
+                const completedVideo = await this.pollVideoStatus(video.id, 60, progressCallback);
                 return completedVideo;
                 
             } catch (error: any) {
@@ -481,13 +495,30 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
     /**
      * Poll for video generation status
      */
-    private async pollVideoStatus(videoId: string, maxAttempts: number = 60): Promise<{ id: string; url?: string }> {
+    private async pollVideoStatus(videoId: string, maxAttempts: number = 60, progressCallback?: (progress: number, message: string) => void): Promise<{ id: string; url?: string }> {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             try {
                 const video = await (this.client as any).videos.retrieve(videoId);
                 
                 logger.info(`Video ${videoId} status: ${video.status}, progress: ${video.progress || 0}%`);
                 logger.info(`Video object keys: ${Object.keys(video).join(', ')}`);
+                
+                // Update progress based on API response or polling attempt
+                if (progressCallback) {
+                    // If API provides progress, use it (scale from 10-85% range)
+                    const apiProgress = video.progress || 0;
+                    const scaledProgress = 10 + Math.floor((apiProgress / 100) * 75);
+                    
+                    // Otherwise estimate based on polling attempts (videos usually take 20-60 polls)
+                    const estimatedProgress = 10 + Math.floor((attempt / maxAttempts) * 75);
+                    
+                    const currentProgress = apiProgress > 0 ? scaledProgress : estimatedProgress;
+                    const statusMsg = video.status === 'processing' || video.status === 'generating' 
+                        ? `Generating video... ${apiProgress > 0 ? apiProgress + '%' : 'processing'}`
+                        : `Checking status (${attempt + 1}/${maxAttempts})...`;
+                    
+                    progressCallback(currentProgress, statusMsg);
+                }
                 
                 if (video.status === 'completed') {
                     return {
@@ -544,8 +575,9 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
             }
             
             // Create filename with video ID and timestamp
+            // Note: videoId already starts with 'video_' from Sora API
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const filename = `video_${videoId}_${timestamp}.mp4`;
+            const filename = `${videoId}_${timestamp}.mp4`;
             const localPath = path.join(videoDir, filename);
             
             // Download the video
@@ -573,15 +605,27 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
                 const content = await ((this.client as any).videos as any).content(videoId);
                 buffer = Buffer.from(await content.arrayBuffer());
             } else {
-                // Fallback to direct URL download
+                // Fallback to direct URL download with authentication
                 logger.info(`Downloading video from URL: ${videoUrl}`);
                 const https = require('https');
                 const http = require('http');
+                const { URL } = require('url');
                 
+                const parsedUrl = new URL(videoUrl);
                 const protocol = videoUrl.startsWith('https') ? https : http;
                 
+                const options = {
+                    hostname: parsedUrl.hostname,
+                    path: parsedUrl.pathname + parsedUrl.search,
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${this.apiKey}`,
+                        'Content-Type': 'application/octet-stream'
+                    }
+                };
+                
                 buffer = await new Promise<Buffer>((resolve, reject) => {
-                    protocol.get(videoUrl, (response: any) => {
+                    const request = protocol.request(options, (response: any) => {
                         if (response.statusCode !== 200) {
                             reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
                             return;
@@ -591,7 +635,10 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
                         response.on('data', (chunk: Buffer) => chunks.push(chunk));
                         response.on('end', () => resolve(Buffer.concat(chunks)));
                         response.on('error', reject);
-                    }).on('error', reject);
+                    });
+                    
+                    request.on('error', reject);
+                    request.end();
                 });
             }
             

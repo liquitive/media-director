@@ -224,6 +224,12 @@
         "icon": "$(note)"
       },
       {
+        "command": "sora.openEditResearchPanel",
+        "title": "Open Edit Research Results Panel",
+        "category": "Sora",
+        "icon": "$(book)"
+      },
+      {
         "command": "sora.openScript",
         "title": "Open Script",
         "category": "Sora"
@@ -411,6 +417,11 @@
           "command": "sora.openEditorsNotesPanel",
           "when": "view == soraStories && viewItem == story",
           "group": "navigation@3"
+        },
+        {
+          "command": "sora.openEditResearchPanel",
+          "when": "view == soraStories && viewItem == story",
+          "group": "navigation@4"
         },
         {
           "command": "sora.generateScript",

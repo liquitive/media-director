@@ -26,7 +26,8 @@ export class MasterContextFileBuilder {
   }
   
   /**
-   * Build comprehensive master context file
+   * Build/update master context file
+   * Updates existing master_context.json instead of creating new
    */
   async buildContextFile(
     storyId: string,
@@ -40,8 +41,21 @@ export class MasterContextFileBuilder {
     this.errorLogger.logInfo(storyId, 'Building master context file...');
     
     try {
-      // 1. Compress assets
-      const compressedAssets = await this.compressAssets(assets);
+      // Get story directory and load existing master_context.json
+      const storyDirName = story?.name.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'untitled_story';
+      const storyDir = path.join(this.workspaceRoot, 'sora-output', 'stories', storyDirName);
+      const sourceDir = path.join(storyDir, 'source');
+      const filePath = path.join(sourceDir, 'master_context.json');
+      
+      // Load existing context
+      let existingContext: any = {};
+      if (fs.existsSync(filePath)) {
+        existingContext = JSON.parse(await fsPromises.readFile(filePath, 'utf-8'));
+        this.errorLogger.logInfo(storyId, 'Loaded existing master_context.json');
+      }
+      
+      // 1. Compress assets (story-specific assets only)
+      const storyAssets = await this.compressAssets(assets);
       
       // 2. Parse research (NO COMPRESSION - full context)
       const research = await this.parseFullResearch(analysis, researchText);
@@ -52,48 +66,39 @@ export class MasterContextFileBuilder {
       // 4. Pre-resolve assets for all segments
       const segments = await this.buildSegmentsWithAssets(
         timingMap.segments,
-        compressedAssets
+        storyAssets
       );
       
-      // 5. Build complete context
-      const contextFile: MasterContextFile = {
-        storyId,
-        storyName: story?.name || analysis.title || 'Untitled Story',
-        storyDescription: story?.description || analysis.context || '',
-        storyContent: story?.content || analysis.transcription || '',
+      // 5. Merge with existing context, updating only the new fields
+      const updatedContext: any = {
+        ...existingContext,
+        // Update these narrative/content fields
         transcription: analysis.transcription,
         research,
         audioAnalysis: this.buildAudioAnalysis(timingMap, analysis),
-        compressedAssets,
+        storyAssets, // Renamed from compressedAssets
         timingMap,
         cinematographyGuidelines: cinematography,
         generationInstructions: this.buildGenerationInstructions(analysis),
         segments,
-        editorsNotes: story?.editorsNotes || null
+        modifiedAt: new Date().toISOString()
       };
       
-      // 6. Write to temporary file
-      const filePath = await this.writeContextFile(contextFile, storyId);
+      // 6. Write updated context
+      await fsPromises.writeFile(filePath, JSON.stringify(updatedContext, null, 2));
       
-      // Log file size and warn if approaching OpenAI limits
+      // Log file size
       const stats = await fsPromises.stat(filePath);
       const sizeMB = (stats.size / 1024 / 1024).toFixed(2);
-      this.errorLogger.logInfo(storyId, `Master context file created: ${filePath} (${sizeMB} MB)`);
+      this.errorLogger.logInfo(storyId, `Master context file updated: ${filePath} (${sizeMB} MB)`);
       
-      // Warn if approaching OpenAI file size limits (512 MB max)
-      if (stats.size > 100 * 1024 * 1024) { // 100 MB warning threshold
-        this.errorLogger.logWarning(storyId,
-          `Large context file: ${sizeMB} MB (OpenAI limit: 512 MB)`,
-          { fileSize: stats.size, filePath }
-        );
+      if (stats.size > 500 * 1024 * 1024) {
+        this.errorLogger.logWarning(storyId, `Context file is large (${sizeMB} MB). Consider asset compression.`);
       }
       
       return filePath;
-    } catch (error) {
-      this.errorLogger.logCritical(storyId, 'Failed to build master context file', {
-        error: error instanceof Error ? error.message : String(error),
-        stackTrace: error instanceof Error ? error.stack : undefined
-      });
+    } catch (error: any) {
+      this.errorLogger.logCritical(storyId, `Failed to build master context: ${error.message}`);
       throw error;
     }
   }
@@ -305,12 +310,11 @@ export class MasterContextFileBuilder {
    * Build generation instructions
    */
   private buildGenerationInstructions(analysis: any): any {
+    // Only narrative/creative direction - NO technical execution settings
     return {
-      model: 'sora',
       visualStyle: analysis.visualStyle || 'naturalistic',
       customStylePrompt: analysis.customStylePrompt,
       defaultDuration: 4,
-      quality: 'medium',
       aspectRatio: '16:9',
       maxPromptChars: 400,
       audioSettings: {

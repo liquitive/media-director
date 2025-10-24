@@ -25,10 +25,21 @@ export interface CompressedAsset {
 }
 
 export interface MasterContextFile {
+  // Core Story Identity & Content
   storyId: string;
   storyName: string;
   storyDescription: string;
   storyContent: string;
+  inputType: 'text' | 'audio' | 'video';
+  inputSource: string;
+  createdAt: string;
+  modifiedAt: string;
+  
+  // Optional story metadata
+  sourceUrl?: string;
+  importedFrom?: 'manual' | 'file' | 'web' | 'json';
+  
+  // Story content data
   transcription?: string;
   
   // FULL research context (NO compression)
@@ -90,22 +101,21 @@ export interface MasterContextFile {
       peak: number;
     };
     estimatedTempo: number;
-  };
+  } | null;
   
-  compressedAssets: CompressedAsset[];
+  storyAssets: CompressedAsset[]; // Story-specific assets extracted from THIS story only
+  assetsUsed?: string[]; // IDs of assets actually used in segments (narrative context)
   timingMap: any; // Full timing map from audio analysis
   cinematographyGuidelines: {
     cameraMovements: string;
     lightingPrinciples: string;
     shotComposition: string;
     visualContinuity: string;
-  };
+  } | null;
   generationInstructions: {
-    model: 'sora' | 'sora-turbo';
     visualStyle: string;
     customStylePrompt?: string;
     defaultDuration: number;
-    quality: 'low' | 'medium' | 'high';
     aspectRatio: '16:9' | '4:3' | '1:1' | '9:16';
     maxPromptChars?: number;
     audioSettings: {
@@ -115,7 +125,7 @@ export interface MasterContextFile {
       narrationVolume: number;
     };
     preferredAssets: string[];
-  };
+  } | null;
   segments: {
     id: string;
     text: string;

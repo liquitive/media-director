@@ -132,11 +132,12 @@ export class StorylineEditorProvider {
             // Get story directory
             const storyDir = this.storyService.getStoryDirectory(storyId);
             
-            // Load audio analysis if available
-            const audioAnalysisPath = path.join(storyDir, 'audio_analysis.json');
+            // Load audio analysis from master_context.json if available
+            const masterContextPath = path.join(storyDir, 'source', 'master_context.json');
             let audioAnalysis = null;
-            if (fs.existsSync(audioAnalysisPath)) {
-                audioAnalysis = JSON.parse(fs.readFileSync(audioAnalysisPath, 'utf-8'));
+            if (fs.existsSync(masterContextPath)) {
+                const masterContext = JSON.parse(fs.readFileSync(masterContextPath, 'utf-8'));
+                audioAnalysis = masterContext.audioAnalysis || null;
                 
                 // Prepare waveform peaks from energy data
                 if (audioAnalysis) {

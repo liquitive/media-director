@@ -170,6 +170,14 @@ export function registerCommands(context: vscode.ExtensionContext, services: Ser
         })
     );
 
+    // Open edit research results panel
+    context.subscriptions.push(
+        vscode.commands.registerCommand('sora.openEditResearchPanel', async (storyIdOrItem: any) => {
+            const storyId = typeof storyIdOrItem === 'string' ? storyIdOrItem : storyIdOrItem?.story?.id;
+            await openEditResearchPanel(storyService, storyId, context, aiService);
+        })
+    );
+
     // Manual story editing commands
     context.subscriptions.push(
         vscode.commands.registerCommand('sora.editStoryDetails', async (storyIdOrItem: any) => {
@@ -839,18 +847,27 @@ async function viewTimingMap(storyId: string, storyService: StoryService): Promi
     }
 
     const storyDir = storyService.getStoryDirectory(storyId);
-    const timingMapPath = path.join(storyDir, 'source', 'timing_map.json');
+    const masterContextPath = path.join(storyDir, 'source', 'master_context.json');
     
-    if (!require('fs').existsSync(timingMapPath)) {
-        Notifications.error('No timing map found. This story may not have audio timing analysis.');
+    if (!require('fs').existsSync(masterContextPath)) {
+        Notifications.error('master_context.json not found. This story may be incomplete.');
         return;
     }
-
-    // Open the timing map file
-    const timingMapUri = vscode.Uri.file(timingMapPath);
+    
+    const masterContext = JSON.parse(require('fs').readFileSync(masterContextPath, 'utf-8'));
+    if (!masterContext.timingMap) {
+        Notifications.error('No timing map found in master_context.json. This story may not have audio timing analysis.');
+        return;
+    }
+    
+    // Create a temporary file to display the timing map
+    const tempTimingMapPath = path.join(storyDir, 'source', '.timing_map_view.json');
+    require('fs').writeFileSync(tempTimingMapPath, JSON.stringify(masterContext.timingMap, null, 2));
+    
+    const timingMapUri = vscode.Uri.file(tempTimingMapPath);
     await vscode.commands.executeCommand('vscode.open', timingMapUri);
     
-    logger.info(`Opened timing map: ${timingMapPath}`);
+    logger.info(`Opened timing map from master_context.json: ${tempTimingMapPath}`);
 }
 
 async function regenerateResearch(storyId: string, storyService: StoryService, aiService: AIService): Promise<void> {
@@ -878,16 +895,14 @@ async function regenerateResearch(storyId: string, storyService: StoryService, a
             storyId
         );
         
-        // Update analysis.json with research data
+        // Update master_context.json with research data
         const storyDir = storyService.getStoryDirectory(storyId);
-        const analysisPath = path.join(storyDir, 'source', 'analysis.json');
-        if (require('fs').existsSync(analysisPath)) {
-            const analysisData = JSON.parse(require('fs').readFileSync(analysisPath, 'utf-8'));
-            const enhancedAnalysis = {
-                ...analysisData,
-                researchText: research
-            };
-            require('fs').writeFileSync(analysisPath, JSON.stringify(enhancedAnalysis, null, 2));
+        const masterContextPath = path.join(storyDir, 'source', 'master_context.json');
+        if (require('fs').existsSync(masterContextPath)) {
+            const masterContext = JSON.parse(require('fs').readFileSync(masterContextPath, 'utf-8'));
+            masterContext.research = research;
+            masterContext.modifiedAt = new Date().toISOString();
+            require('fs').writeFileSync(masterContextPath, JSON.stringify(masterContext, null, 2));
         }
         
         progressManager.completeTask(researchTaskId, 
@@ -1999,6 +2014,636 @@ function getEmbeddedEditorsNotesHTML(): string {
                     break;
             }
         });
+    </script>
+</body>
+</html>`;
+}
+
+/**
+ * Open Edit Research Results in a webview panel
+ */
+async function openEditResearchPanel(storyService: StoryService, storyId?: string, context?: vscode.ExtensionContext, aiService?: AIService) {
+    try {
+        // Create and show a new webview panel
+        const panel = vscode.window.createWebviewPanel(
+            'soraEditResearch',
+            'Edit Research Results',
+            vscode.ViewColumn.One,
+            {
+                enableScripts: true,
+                retainContextWhenHidden: true,
+                localResourceRoots: []
+            }
+        );
+
+        // Get the HTML content - try multiple paths
+        let htmlContent: string;
+        try {
+            // First try the extension context path
+            const htmlPath = vscode.Uri.joinPath(context!.extensionUri, 'src', 'webviews', 'editResearchResults.html');
+            htmlContent = require('fs').readFileSync(htmlPath.fsPath, 'utf8');
+        } catch (error) {
+            try {
+                // Fallback to relative path from compiled location
+                const htmlPath = require('path').join(__dirname, '../../src/webviews/editResearchResults.html');
+                htmlContent = require('fs').readFileSync(htmlPath, 'utf8');
+            } catch (error2) {
+                // Final fallback - use embedded HTML
+                htmlContent = getEmbeddedEditResearchHTML();
+            }
+        }
+        panel.webview.html = htmlContent;
+
+        // Handle messages from the webview
+        panel.webview.onDidReceiveMessage(
+            async message => {
+                switch (message.command) {
+                    case 'loadResearch':
+                        await handleLoadResearch(panel.webview, storyService, storyId);
+                        break;
+                    case 'saveResearch':
+                        await handleSaveResearch(message.content, panel.webview, storyService, storyId, message.showStatus);
+                        break;
+                    case 'summarizeResearch':
+                        await handleSummarizeResearch(message.fieldId, message.content, panel.webview, storyService, aiService!);
+                        break;
+                }
+            },
+            undefined,
+            []
+        );
+
+        // Load research when panel becomes visible
+        panel.onDidChangeViewState(e => {
+            if (e.webviewPanel.visible) {
+                handleLoadResearch(panel.webview, storyService, storyId);
+            }
+        });
+
+        // Initial load of research data after panel is set up
+        // Use setTimeout to ensure webview is fully initialized
+        setTimeout(() => {
+            handleLoadResearch(panel.webview, storyService, storyId);
+        }, 100);
+
+        logger.info('Edit research results panel opened');
+    } catch (error) {
+        logger.error('Failed to open edit research results panel:', error);
+        Notifications.error(`Failed to open edit research results: ${error}`);
+    }
+}
+
+/**
+ * Handle loading research in the webview
+ */
+async function handleLoadResearch(webview: vscode.Webview, storyService: StoryService, storyId?: string) {
+    try {
+        let currentStory;
+        
+        if (storyId) {
+            // Use the specific story ID provided
+            currentStory = storyService.getStory(storyId);
+        } else {
+            // Fallback to first story if no specific ID
+            const stories = storyService.getAllStories();
+            if (stories.length === 0) {
+                webview.postMessage({
+                    command: 'loadResearch',
+                    research: null
+                });
+                return;
+            }
+            currentStory = stories[0];
+        }
+        
+        if (currentStory) {
+            // Load research ONLY from master_context.json (single source of truth)
+            let researchContent = '';
+            
+            try {
+                const storyDir = storyService.getStoryDirectory(currentStory.id);
+                const masterContextPath = require('path').join(storyDir, 'source', 'master_context.json');
+                
+                logger.info(`Loading research from: ${masterContextPath}`);
+                
+                if (require('fs').existsSync(masterContextPath)) {
+                    const masterContext = JSON.parse(require('fs').readFileSync(masterContextPath, 'utf8'));
+                    
+                    if (masterContext.research) {
+                        researchContent = typeof masterContext.research === 'string' 
+                            ? masterContext.research 
+                            : JSON.stringify(masterContext.research, null, 2);
+                        logger.info(`Research loaded: ${researchContent.length} characters`);
+                    } else {
+                        logger.warn('master_context.json exists but research field is empty');
+                    }
+                } else {
+                    logger.warn('master_context.json not found for story:', currentStory.id, 'at path:', masterContextPath);
+                }
+            } catch (error) {
+                logger.error(`Error loading research from master_context.json for story ${currentStory.id}:`, error);
+            }
+            
+            webview.postMessage({
+                command: 'loadResearch',
+                storyId: currentStory.id,
+                research: {
+                    content: researchContent
+                }
+            });
+        } else {
+            webview.postMessage({
+                command: 'loadResearch',
+                research: null
+            });
+        }
+    } catch (error) {
+        logger.error('Error loading research:', error);
+        webview.postMessage({
+            command: 'loadResearch',
+            research: null
+        });
+    }
+}
+
+/**
+ * Handle saving research in the webview
+ */
+async function handleSaveResearch(content: string, webview: vscode.Webview, storyService: StoryService, storyId?: string, showStatus: boolean = false) {
+    try {
+        if (!storyId) {
+            const stories = storyService.getAllStories();
+            if (stories.length === 0) {
+                webview.postMessage({
+                    command: 'saveResult',
+                    success: false,
+                    error: 'No story found',
+                    showStatus: showStatus
+                });
+                return;
+            }
+            storyId = stories[0].id;
+        }
+
+        // Write research DIRECTLY to master_context.json (single source of truth)
+        logger.info(`Saving research updates for story ${storyId} (${content.length} characters)`);
+        
+        try {
+            const story = storyService.getStory(storyId);
+            if (!story) {
+                webview.postMessage({
+                    command: 'saveResult',
+                    success: false,
+                    error: 'Story not found',
+                    showStatus: showStatus
+                });
+                return;
+            }
+
+            const storyDir = storyService.getStoryDirectory(storyId);
+            const masterContextPath = require('path').join(storyDir, 'source', 'master_context.json');
+            
+            if (!require('fs').existsSync(masterContextPath)) {
+                logger.error(`master_context.json not found at ${masterContextPath}`);
+                webview.postMessage({
+                    command: 'saveResult',
+                    success: false,
+                    error: 'master_context.json not found',
+                    showStatus: showStatus
+                });
+                return;
+            }
+            
+            // Load, update, and save master_context.json
+            const masterContext = JSON.parse(require('fs').readFileSync(masterContextPath, 'utf8'));
+            masterContext.research = content;
+            masterContext.modifiedAt = new Date().toISOString();
+            
+            require('fs').writeFileSync(masterContextPath, JSON.stringify(masterContext, null, 2));
+            logger.info(`Research saved successfully to master_context.json`);
+        } catch (error) {
+            logger.error(`Error saving research to master_context.json:`, error);
+            webview.postMessage({
+                command: 'saveResult',
+                success: false,
+                error: `Failed to save: ${error}`,
+                showStatus: showStatus
+            });
+            return;
+        }
+
+        webview.postMessage({
+            command: 'saveResult',
+            success: true,
+            showStatus: showStatus
+        });
+
+        logger.info(`Research content saved for story: ${storyId}`);
+    } catch (error) {
+        logger.error('Error saving research:', error);
+        webview.postMessage({
+            command: 'saveResult',
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            showStatus: showStatus
+        });
+    }
+}
+
+/**
+ * Handle summarizing research content
+ */
+async function handleSummarizeResearch(fieldId: string, content: string, webview: vscode.Webview, storyService: StoryService, aiService: AIService) {
+    try {
+        console.log('Summarizing research field:', fieldId, 'content length:', content.length);
+
+        // Define field-specific prompts for research summarization
+        const fieldPrompts: {[key: string]: string} = {
+            'researchContent': `Please summarize and refine this research content for video production. Make it more concise while preserving all essential information for script generation. Focus on clarity and actionable details for video creation.`
+        };
+
+        const prompt = fieldPrompts[fieldId] || 'Please summarize and refine this content.';
+        const fullPrompt = `${prompt}\n\nContent to summarize:\n${content}`;
+
+        console.log('Sending to AI service with prompt length:', fullPrompt.length);
+        
+        // Use the AI service to get summarized content
+        const summarizedContent = await aiService.getRawText(fullPrompt);
+        
+        console.log('Received summarized content, length:', summarizedContent.length);
+
+        webview.postMessage({
+            command: 'summarizeResult',
+            fieldId: fieldId,
+            success: true,
+            summarizedContent: summarizedContent
+        });
+
+        logger.info(`Research content summarized for field: ${fieldId}`);
+    } catch (error) {
+        console.error('Error summarizing research field:', error);
+        logger.error('Error summarizing research field:', error);
+        webview.postMessage({
+            command: 'summarizeResult',
+            fieldId: fieldId,
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error'
+        });
+    }
+}
+
+/**
+ * Get embedded HTML content for Edit Research Results
+ */
+function getEmbeddedEditResearchHTML(): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Research Results</title>
+    <style>
+        body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+            margin: 0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+
+        .header h1 {
+            color: var(--vscode-foreground);
+            margin: 0 0 10px 0;
+            font-size: 1.5em;
+        }
+
+        .header p {
+            color: var(--vscode-descriptionForeground);
+            margin: 0;
+            font-size: 0.9em;
+        }
+
+        .research-section {
+            margin-bottom: 25px;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .section-title {
+            color: var(--vscode-foreground);
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .btn-summarize {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: 1px solid var(--vscode-button-border);
+            padding: 6px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 0.85em;
+            transition: all 0.2s ease;
+        }
+
+        .btn-summarize:hover:not(:disabled) {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+
+        .btn-summarize:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .research-textarea {
+            width: 100%;
+            min-height: 200px;
+            padding: 12px;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            line-height: 1.5;
+            border-radius: 3px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+
+        .research-textarea:focus {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
+        }
+
+        .status {
+            padding: 8px 12px;
+            border-radius: 3px;
+            margin: 10px 0;
+            font-size: 0.9em;
+            display: none;
+        }
+
+        .status.success {
+            background-color: var(--vscode-testing-iconPassed);
+            color: var(--vscode-foreground);
+        }
+
+        .status.error {
+            background-color: var(--vscode-testing-iconFailed);
+            color: var(--vscode-foreground);
+        }
+
+        .auto-save-status {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: var(--vscode-badge-background);
+            color: var(--vscode-badge-foreground);
+            padding: 6px 12px;
+            border-radius: 3px;
+            font-size: 0.8em;
+            z-index: 1000;
+        }
+
+        .research-info {
+            background-color: var(--vscode-textBlockQuote-background);
+            border-left: 3px solid var(--vscode-textBlockQuote-border);
+            padding: 12px;
+            margin-bottom: 20px;
+            border-radius: 3px;
+        }
+
+        .research-info h3 {
+            margin: 0 0 8px 0;
+            color: var(--vscode-foreground);
+            font-size: 1em;
+        }
+
+        .research-info p {
+            margin: 0;
+            color: var(--vscode-descriptionForeground);
+            font-size: 0.9em;
+        }
+
+        .original-content {
+            margin-top: 15px;
+        }
+
+        .original-content h4 {
+            color: var(--vscode-foreground);
+            margin: 0 0 8px 0;
+            font-size: 0.9em;
+        }
+
+        .original-text {
+            background-color: var(--vscode-textCodeBlock-background);
+            border: 1px solid var(--vscode-panel-border);
+            padding: 10px;
+            border-radius: 3px;
+            font-family: var(--vscode-editor-font-family);
+            font-size: 0.85em;
+            line-height: 1.4;
+            max-height: 200px;
+            overflow-y: auto;
+            color: var(--vscode-foreground);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📚 Edit Research Results</h1>
+            <p>Review and customize the AI-generated research for this story. Changes will be used in script generation.</p>
+        </div>
+
+        <div class="research-info">
+            <h3>💡 About Research Editing</h3>
+            <p>This research text guides the AI in generating accurate and contextually appropriate video scripts. You can edit the content to better reflect your vision or use the Summarize button to refine it with AI assistance.</p>
+        </div>
+
+        <div class="research-section">
+            <div class="section-header">
+                <h2 class="section-title">Research Content</h2>
+                <button class="btn-summarize" data-field="researchContent" onclick="summarizeField('researchContent')">
+                    📝 Summarize
+                </button>
+            </div>
+            <textarea 
+                id="researchContent" 
+                class="research-textarea" 
+                placeholder="Research content will appear here after analysis..."
+            ></textarea>
+        </div>
+
+        <div class="original-content" id="originalContentSection" style="display: none;">
+            <h4>Original AI-Generated Research</h4>
+            <div id="originalContent" class="original-text"></div>
+        </div>
+
+        <div id="status" class="status"></div>
+    </div>
+
+    <div id="autoSaveStatus" class="auto-save-status" style="display: none;"></div>
+
+    <script>
+        let autoSaveTimeout;
+        let currentStoryId = null;
+
+        // Initialize auto-save
+        function setupAutoSave() {
+            const textarea = document.getElementById('researchContent');
+            textarea.addEventListener('input', function() {
+                clearTimeout(autoSaveTimeout);
+                autoSaveTimeout = setTimeout(() => {
+                    saveResearch();
+                }, 1000); // 1 second debounce
+            });
+        }
+
+        function saveResearch(showStatus = false) {
+            const content = document.getElementById('researchContent').value;
+            
+            updateAutoSaveStatus('💾 Saving...');
+            
+            vscode.postMessage({
+                command: 'saveResearch',
+                storyId: currentStoryId,
+                content: content,
+                showStatus: showStatus
+            });
+        }
+
+        function clearResearch() {
+            if (confirm('Are you sure you want to clear all research content?')) {
+                document.getElementById('researchContent').value = '';
+                updateAutoSaveStatus('Research cleared');
+            }
+        }
+
+        function summarizeField(fieldId) {
+            console.log('Summarize field called for:', fieldId);
+            const textarea = document.getElementById(fieldId);
+            const content = textarea.value.trim();
+            
+            if (!content) {
+                showStatus('Please enter some content to summarize', 'error');
+                return;
+            }
+            
+            // Find the button for this field using data attribute
+            const button = document.querySelector('button[data-field="' + fieldId + '"]');
+            if (button) {
+                button.disabled = true;
+                button.textContent = '⏳ Summarizing...';
+            }
+            
+            console.log('Sending summarize request for field:', fieldId, 'content length:', content.length);
+            
+            // Send to extension for AI processing
+            vscode.postMessage({
+                command: 'summarizeResearch',
+                fieldId: fieldId,
+                content: content
+            });
+        }
+
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = \`status \${type}\`;
+            statusDiv.style.display = 'block';
+            
+            setTimeout(() => {
+                statusDiv.textContent = '';
+                statusDiv.className = 'status';
+                statusDiv.style.display = 'none';
+            }, 3000);
+        }
+
+        function updateAutoSaveStatus(message) {
+            const autoSaveDiv = document.getElementById('autoSaveStatus');
+            if (autoSaveDiv) {
+                autoSaveDiv.textContent = message;
+                autoSaveDiv.style.display = 'block';
+                
+                if (message === '💾 Saving...') {
+                    setTimeout(() => {
+                        autoSaveDiv.style.display = 'none';
+                    }, 2000);
+                }
+            }
+        }
+
+        // Handle messages from extension
+        window.addEventListener('message', event => {
+            const message = event.data;
+            
+            switch (message.command) {
+                case 'loadResearch':
+                    currentStoryId = message.storyId;
+                    if (message.research) {
+                        document.getElementById('researchContent').value = message.research.content || '';
+                        
+                        // Show original content if it exists and is different
+                        if (message.research.originalContent && 
+                            message.research.originalContent !== message.research.content) {
+                            document.getElementById('originalContent').textContent = message.research.originalContent;
+                            document.getElementById('originalContentSection').style.display = 'block';
+                        }
+                    }
+                    setupAutoSave();
+                    break;
+                    
+                case 'saveResult':
+                    if (message.showStatus) {
+                        if (message.success) {
+                            showStatus('Research results saved successfully!', 'success');
+                        } else {
+                            showStatus('Failed to save research: ' + message.error, 'error');
+                        }
+                    }
+                    updateAutoSaveStatus('✅ Saved');
+                    break;
+                    
+                case 'summarizeResult':
+                    // Re-enable the button
+                    const button = document.querySelector('button[data-field="' + message.fieldId + '"]');
+                    if (button) {
+                        button.disabled = false;
+                        button.textContent = '📝 Summarize';
+                    }
+                    
+                    if (message.success) {
+                        // Update the textarea with the summarized content
+                        document.getElementById(message.fieldId).value = message.summarizedContent;
+                        showStatus('Research content summarized successfully!', 'success');
+                    } else {
+                        showStatus('Failed to summarize: ' + message.error, 'error');
+                    }
+                    break;
+            }
+        });
+
+        // Initialize
+        setupAutoSave();
     </script>
 </body>
 </html>`;
