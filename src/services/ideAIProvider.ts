@@ -336,8 +336,8 @@ Don't repeat descriptions! Just use [[tags]] and describe what happens:
 }
 
 **Requirements:**
-1. Break the content into segments of 8-12 seconds each
-2. Each segment must have a highly detailed visualPrompt suitable for Sora AI video generation
+1. Break the content into segments of 4-12 seconds each
+2. Each segment must have a highly detailed visualPrompt intended for Sora AI video generation
 3. Visual prompts should be cinematic and descriptive`;
 
         if (assetLibrary && assetLibrary.length > 0) {
@@ -366,8 +366,8 @@ Don't repeat descriptions! Just use [[tags]] and describe what happens:
 
 🎯 **Camera & POV:**
    - Show protagonist's reactions, face, body language  
-   - Use over-shoulder shots showing what protagonist sees
-   - Include first-person POV shots when appropriate
+   - Use first-person POV shots showing what protagonist sees
+   - Include over-shoulder POV shots when appropriate
 
 **IMPORTANT:** Return ONLY valid JSON. No markdown code blocks, no explanations, just the JSON object.`;
 
@@ -468,9 +468,17 @@ Return only the style name (e.g., "cinematic").`;
         
         const systemPrompt = `You rewrite scene prompts for OpenAI Sora video generation.
 
+🚨 ABSOLUTE CHARACTER LIMIT: ${maxChars} characters
+Your output MUST NOT EXCEED ${maxChars} characters. This is a HARD TECHNICAL CONSTRAINT.
+If your draft is too long, you MUST compress it by:
+- Using shorter synonyms ("man" vs "gentleman", "moves" vs "transitions")
+- Removing filler words ("that", "very", "quite")
+- Condensing compound descriptions ("gray-haired weathered man" vs "weathered man with gray hair")
+COUNT YOUR CHARACTERS as you write. Do NOT exceed ${maxChars} chars under ANY circumstances.
+
 RULES (STRICT):
 - REPLACE all [[tags]] with their EXACT VISUAL descriptions from the TAGS section. NO tags should remain in output.
-- Output MUST be <= ${maxChars} characters total. No newlines, no quotes, no parentheses, ASCII only.
+- No newlines, no quotes, no parentheses, ASCII only.
 - Write 1-2 short sentences. Active voice, present tense.
 - Include: WHO (from tag descriptions), WHERE (from tag descriptions), WHAT (action), CAMERA, LIGHTING, MOOD.
 - The TAGS section at the top defines what each [[tag]] represents. Replace each [[tag]] with its definition.
@@ -518,7 +526,7 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
                 .replace(/\s+/g, ' ')          // Collapse multiple spaces
                 .trim();
             
-            // Validate tag integrity and length
+            // Validate tag integrity
             const tagPattern = /\[\[[^\]]+\]\]/g;
             const inputTags = (rawPrompt.match(tagPattern) || []);
             const outputTags = (optimized.match(tagPattern) || []);
@@ -530,13 +538,14 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
                 }
             }
             
-            // Check length and ensure no partial tags at end
+            // Validate character limit (CRITICAL)
             if (optimized.length > maxChars) {
-                logger.warn(`Optimized prompt ${optimized.length} chars exceeds limit ${maxChars}, truncating safely`);
-                optimized = this.truncateSafely(optimized, maxChars);
+                logger.error(`❌ AI FAILED TO RESPECT CHARACTER LIMIT: Generated ${optimized.length} chars, limit is ${maxChars} chars`);
+                logger.error(`Generated prompt: ${optimized}`);
+                throw new Error(`AI-generated prompt exceeded character limit: ${optimized.length}/${maxChars} chars. The AI must generate prompts within the specified limit. DO NOT TRUNCATE - this breaks prompt integrity.`);
             }
             
-            logger.info(`Prompt optimization: ${rawPrompt.length} → ${optimized.length} chars`);
+            logger.info(`✅ Prompt optimization: ${rawPrompt.length} → ${optimized.length}/${maxChars} chars`);
             logger.info(`Optimized prompt: ${optimized}`);
             
             return optimized;
@@ -546,42 +555,5 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
         }
     }
 
-    /**
-     * Safely truncate prompt to maxChars without cutting [[tags]]
-     */
-    private truncateSafely(prompt: string, maxChars: number): string {
-        if (prompt.length <= maxChars) {
-            return prompt;
-        }
-        
-        // Find the last complete word before maxChars that doesn't cut a tag
-        let cutoff = maxChars;
-        
-        // Ensure we're not inside a [[tag]]
-        while (cutoff > 0) {
-            const beforeCutoff = prompt.substring(0, cutoff);
-            const afterCutoff = prompt.substring(cutoff);
-            
-            // Count opening and closing brackets before cutoff
-            const openBrackets = (beforeCutoff.match(/\[\[/g) || []).length;
-            const closeBrackets = (beforeCutoff.match(/\]\]/g) || []).length;
-            
-            // If brackets are balanced, we're not cutting a tag
-            if (openBrackets === closeBrackets) {
-                // Try to cut at a word boundary
-                const lastSpace = beforeCutoff.lastIndexOf(' ');
-                if (lastSpace > maxChars * 0.7) {
-                    return beforeCutoff.substring(0, lastSpace).trim();
-                }
-                return beforeCutoff.trim();
-            }
-            
-            // Move back to avoid cutting tag
-            cutoff--;
-        }
-        
-        // Fallback: return first maxChars (shouldn't reach here)
-        return prompt.substring(0, maxChars);
-    }
 }
 
