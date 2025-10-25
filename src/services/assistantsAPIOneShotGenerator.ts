@@ -509,6 +509,14 @@ OUTPUT REQUIREMENT:
   private fusePrompt(structuredFields: any, continuityRefs: any): string {
     const parts: string[] = [];
     
+    // Helper to safely get string value
+    const getString = (val: any): string => {
+      if (typeof val === 'string') return val;
+      if (val === null || val === undefined) return '';
+      if (typeof val === 'object' && Object.keys(val).length === 0) return ''; // Empty object/array
+      return String(val);
+    };
+    
     // For first appearances: add identity lockline
     if (continuityRefs.firstAppearanceByCharacter?.length > 0) {
       for (const char of continuityRefs.firstAppearanceByCharacter) {
@@ -525,23 +533,27 @@ OUTPUT REQUIREMENT:
     }
     
     // Environment delta (only changes from continuity ref)
-    if (structuredFields.environment_delta && structuredFields.environment_delta.trim()) {
-      parts.push(structuredFields.environment_delta);
+    const envDelta = getString(structuredFields.environment_delta).trim();
+    if (envDelta) {
+      parts.push(envDelta);
     }
     
     // Props delta (only new props)
-    if (structuredFields.props_delta && structuredFields.props_delta.trim()) {
-      parts.push(structuredFields.props_delta);
+    const propsDelta = getString(structuredFields.props_delta).trim();
+    if (propsDelta) {
+      parts.push(propsDelta);
     }
     
     // Shot/camera
-    if (structuredFields.shot && structuredFields.shot.trim()) {
-      parts.push(structuredFields.shot);
+    const shot = getString(structuredFields.shot).trim();
+    if (shot) {
+      parts.push(shot);
     }
     
     // Lighting
-    if (structuredFields.lighting && structuredFields.lighting.trim()) {
-      parts.push(structuredFields.lighting);
+    const lighting = getString(structuredFields.lighting).trim();
+    if (lighting) {
+      parts.push(lighting);
     }
     
     // Join with semicolons for clear separation
