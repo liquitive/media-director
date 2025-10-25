@@ -353,6 +353,25 @@ export class VideoViewerCommand {
             }
         });
 
+        // Aggressive autoplay function
+        function attemptAutoplay() {
+            console.log('Attempting autoplay...');
+            const playPromise = videoPlayer.play();
+            if (playPromise !== undefined) {
+                playPromise
+                    .then(() => {
+                        console.log('Autoplay successful!');
+                    })
+                    .catch(err => {
+                        console.warn('Autoplay prevented:', err);
+                        // Retry after a short delay
+                        setTimeout(() => {
+                            videoPlayer.play().catch(e => console.warn('Retry autoplay failed:', e));
+                        }, 100);
+                    });
+            }
+        }
+
         // Handle messages from extension
         window.addEventListener('message', event => {
             const message = event.data;
@@ -362,8 +381,11 @@ export class VideoViewerCommand {
                     const data = message.data;
                     videoPlayer.src = data.videoSrc;
                     videoPlayer.load();
-                    // Auto-play the video
-                    videoPlayer.play().catch(err => console.warn('Auto-play prevented:', err));
+                    
+                    // Wait for video to be ready, then play
+                    videoPlayer.addEventListener('loadeddata', () => {
+                        attemptAutoplay();
+                    }, { once: true });
                     
                     // Update buttons
                     prevButton.disabled = !data.hasPrevious;
@@ -374,12 +396,32 @@ export class VideoViewerCommand {
             }
         });
 
-        // Auto-play video on initial load
+        // Auto-play video on initial load - multiple strategies
+        // Strategy 1: Try immediately
+        attemptAutoplay();
+        
+        // Strategy 2: Try when metadata loads
         videoPlayer.addEventListener('loadedmetadata', () => {
-            videoPlayer.play().catch(err => {
-                console.warn('Auto-play prevented:', err);
-                // Webviews in VS Code typically allow autoplay, but catch just in case
-            });
+            if (videoPlayer.paused) {
+                console.log('Video paused after loadedmetadata, attempting play...');
+                attemptAutoplay();
+            }
+        });
+        
+        // Strategy 3: Try when data is loaded
+        videoPlayer.addEventListener('loadeddata', () => {
+            if (videoPlayer.paused) {
+                console.log('Video paused after loadeddata, attempting play...');
+                attemptAutoplay();
+            }
+        });
+        
+        // Strategy 4: Try when video can play
+        videoPlayer.addEventListener('canplay', () => {
+            if (videoPlayer.paused) {
+                console.log('Video can play but is paused, attempting play...');
+                attemptAutoplay();
+            }
         });
 
         // Notify extension that webview is ready
