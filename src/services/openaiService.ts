@@ -570,7 +570,46 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
             }
         }
         
-        throw new Error('Video generation timed out');
+        // Timeout reached - video still generating but we've waited too long
+        logger.error(`⏱️  Video ${videoId} timeout: Still generating after ${maxAttempts} attempts (${maxAttempts * 10 / 60} minutes)`);
+        throw new Error(`Video generation timeout: Video ${videoId} is still generating after ${maxAttempts * 10 / 60} minutes. The video may complete later - you can check its status manually or retry this segment. Video ID: ${videoId}`);
+    }
+
+    /**
+     * Check video status by ID (useful for resuming timed-out videos)
+     */
+    async checkVideoStatus(videoId: string): Promise<{ status: string; progress?: number; url?: string; error?: any }> {
+        try {
+            const video = await (this.client as any).videos.retrieve(videoId);
+            
+            return {
+                status: video.status,
+                progress: video.progress,
+                url: video.output_url || video.url || video.file_url,
+                error: video.error
+            };
+        } catch (error) {
+            logger.error(`Error checking video status for ${videoId}:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Resume polling for a video that previously timed out
+     */
+    async resumeVideoPolling(videoId: string, storyDirectoryPath?: string, progressCallback?: (progress: number, message: string) => void): Promise<{ id: string; url?: string }> {
+        logger.info(`🔄 Resuming polling for video: ${videoId}`);
+        
+        // Poll with extended timeout (video might be close to completion)
+        const completedVideo = await this.pollVideoStatus(videoId, 60, progressCallback);
+        
+        // Download if completed
+        const localVideoPath = await this.downloadVideoToLocal(completedVideo.id, completedVideo.url, storyDirectoryPath);
+        
+        return {
+            id: completedVideo.id,
+            url: localVideoPath
+        };
     }
 
     /**
