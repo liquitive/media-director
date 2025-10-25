@@ -7,20 +7,27 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { StoryService } from '../services/storyService';
+import { StoryTreeProvider } from '../providers/storyTreeProvider';
 import { logger } from '../utils/logger';
 
 export class VideoViewerCommand {
     private static currentPanel: vscode.WebviewPanel | undefined;
     private static currentStoryId: string | undefined;
     private static currentSegmentIndex: number | undefined;
+    private static storyTreeProvider: StoryTreeProvider | undefined;
 
     constructor(
         private context: vscode.ExtensionContext,
-        private storyService: StoryService
-    ) {}
+        private storyService: StoryService,
+        private treeProvider?: StoryTreeProvider
+    ) {
+        if (treeProvider) {
+            VideoViewerCommand.storyTreeProvider = treeProvider;
+        }
+    }
 
-    public static register(context: vscode.ExtensionContext, storyService: StoryService): vscode.Disposable[] {
-        const command = new VideoViewerCommand(context, storyService);
+    public static register(context: vscode.ExtensionContext, storyService: StoryService, storyTreeProvider: StoryTreeProvider): vscode.Disposable[] {
+        const command = new VideoViewerCommand(context, storyService, storyTreeProvider);
         
         return [
             vscode.commands.registerCommand('sora.openVideoViewer', 
@@ -39,6 +46,11 @@ export class VideoViewerCommand {
         // Store current context
         VideoViewerCommand.currentStoryId = storyId;
         VideoViewerCommand.currentSegmentIndex = segmentIndex;
+
+        // Save last opened item state
+        if (VideoViewerCommand.storyTreeProvider) {
+            VideoViewerCommand.storyTreeProvider.saveLastOpenedItem('video', storyId, segmentIndex);
+        }
 
         // Get story to access all segments
         const story = this.storyService.getStory(storyId);
@@ -96,6 +108,9 @@ export class VideoViewerCommand {
             VideoViewerCommand.currentStoryId = undefined;
             VideoViewerCommand.currentSegmentIndex = undefined;
         });
+
+        // Reveal the current segment in the tree view
+        await vscode.commands.executeCommand('sora.revealSegmentVideo', storyId, segmentIndex);
     }
 
     private async navigateToSegment(direction: 'previous' | 'next'): Promise<void> {
@@ -125,6 +140,9 @@ export class VideoViewerCommand {
 
         // Navigate to new segment
         await this.openVideoViewer(VideoViewerCommand.currentStoryId, newIndex, newSegment.videoPath);
+        
+        // Reveal the new segment in the tree view
+        await vscode.commands.executeCommand('sora.revealSegmentVideo', VideoViewerCommand.currentStoryId, newIndex);
     }
 
     private sendVideoData(webview: vscode.Webview, storyId: string, segmentIndex: number): void {

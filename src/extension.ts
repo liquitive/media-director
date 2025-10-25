@@ -298,6 +298,82 @@ function registerTreeView(context: vscode.ExtensionContext): void {
         showCollapseAll: false
     });
 
+    // Pass tree view reference and context to provider so it can reveal items and persist state
+    storyTreeProvider.setTreeView(treeView, context);
+
+    // Periodically save the current visibility state (every 2 seconds when visible)
+    const saveVisibilityState = () => {
+        const state = context.workspaceState.get<any>('storyTreeViewState', { expandedNodes: [] });
+        const isVisible = treeView.visible;
+        
+        if (isVisible) {
+            state.wasViewVisible = true;
+            state.activeView = 'soraStories';
+            context.workspaceState.update('storyTreeViewState', state);
+        }
+    };
+
+    const visibilityTimer = setInterval(saveVisibilityState, 2000);
+    context.subscriptions.push({ dispose: () => clearInterval(visibilityTimer) });
+
+    // Track when the Sora Stories view becomes visible
+    context.subscriptions.push(
+        treeView.onDidChangeVisibility(e => {
+            const state = context.workspaceState.get<any>('storyTreeViewState', { expandedNodes: [] });
+            if (e.visible) {
+                logger.info('👁️ Sora Stories view became visible');
+                state.wasViewVisible = true;
+                state.activeView = 'soraStories';
+            } else {
+                logger.info('👁️ Sora Stories view became hidden');
+                state.wasViewVisible = false;
+            }
+            context.workspaceState.update('storyTreeViewState', state);
+        })
+    );
+
+    // Listen for editor changes to track what's open
+    context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor(editor => {
+            if (editor && storyService) {
+                const filePath = editor.document.uri.fsPath;
+                logger.info(`📝 Editor changed to: ${filePath}`);
+                
+                // Check if it's a segment file
+                const segmentMatch = filePath.match(/segments[/\\]segment_(\d+)\.json$/);
+                if (segmentMatch) {
+                    const segmentIndex = parseInt(segmentMatch[1], 10) - 1; // segment_1.json = index 0
+                    logger.info(`🔍 Detected segment file: segment_${segmentIndex + 1}.json`);
+                    
+                    // Find which story this belongs to
+                    const stories = storyService.getAllStories();
+                    for (const story of stories) {
+                        const storyDir = storyService.getStoryDirectory(story.id);
+                        if (filePath.startsWith(storyDir)) {
+                            logger.info(`💾 Saving segment state: ${story.id}:${segmentIndex}`);
+                            storyTreeProvider.saveLastOpenedItem('segment', story.id, segmentIndex, filePath);
+                            break;
+                        }
+                    }
+                }
+                
+                // Check if it's master_context.json or other story files
+                const masterContextMatch = filePath.match(/master_context\.json$/);
+                if (masterContextMatch) {
+                    const stories = storyService.getAllStories();
+                    for (const story of stories) {
+                        const storyDir = storyService.getStoryDirectory(story.id);
+                        if (filePath.startsWith(storyDir)) {
+                            logger.info(`💾 Saving file state: ${filePath}`);
+                            storyTreeProvider.saveLastOpenedItem('file', story.id, undefined, filePath);
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+    );
+
     // Add tree provider to subscriptions so it gets disposed properly
     context.subscriptions.push(treeView);
     
@@ -309,6 +385,37 @@ function registerTreeView(context: vscode.ExtensionContext): void {
             treeDataProvider: assetTreeProvider,
             showCollapseAll: true
         });
+
+        // Periodically save the current visibility state for Assets view
+        const saveAssetVisibilityState = () => {
+            const state = context.workspaceState.get<any>('storyTreeViewState', { expandedNodes: [] });
+            const isVisible = assetTreeView.visible;
+            
+            if (isVisible) {
+                state.wasViewVisible = true;
+                state.activeView = 'soraAssets';
+                context.workspaceState.update('storyTreeViewState', state);
+            }
+        };
+
+        const assetVisibilityTimer = setInterval(saveAssetVisibilityState, 2000);
+        context.subscriptions.push({ dispose: () => clearInterval(assetVisibilityTimer) });
+
+        // Track when the Sora Assets view becomes visible
+        context.subscriptions.push(
+            assetTreeView.onDidChangeVisibility(e => {
+                const state = context.workspaceState.get<any>('storyTreeViewState', { expandedNodes: [] });
+                if (e.visible) {
+                    logger.info('👁️ Sora Assets view became visible');
+                    state.wasViewVisible = true;
+                    state.activeView = 'soraAssets';
+                } else {
+                    logger.info('👁️ Sora Assets view became hidden');
+                    state.wasViewVisible = false;
+                }
+                context.workspaceState.update('storyTreeViewState', state);
+            })
+        );
 
         context.subscriptions.push(assetTreeView);
         

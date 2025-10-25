@@ -156,7 +156,26 @@ export function registerCommands(context: vscode.ExtensionContext, services: Ser
 
     // Video Viewer with Navigation
     context.subscriptions.push(
-        ...VideoViewerCommand.register(context, storyService)
+        ...VideoViewerCommand.register(context, storyService, storyTreeProvider)
+    );
+
+    // Reveal segment video in tree view (called by video viewer when navigating)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('sora.revealSegmentVideo', async (storyId: string, segmentIndex: number) => {
+            await storyTreeProvider.revealSegmentVideo(storyId, segmentIndex);
+        })
+    );
+
+    // Open segment file with tracking
+    context.subscriptions.push(
+        vscode.commands.registerCommand('sora.openSegmentFile', async (storyId: string, segmentIndex: number, segmentPath: string) => {
+            // Save state before opening
+            storyTreeProvider.saveLastOpenedItem('segment', storyId, segmentIndex, segmentPath);
+            
+            // Open the file
+            const uri = vscode.Uri.file(segmentPath);
+            await vscode.commands.executeCommand('vscode.open', uri);
+        })
     );
 
     // Show progress
@@ -226,6 +245,8 @@ export function registerCommands(context: vscode.ExtensionContext, services: Ser
         vscode.commands.registerCommand('sora.openScript', async (storyIdOrItem: any) => {
             const storyId = typeof storyIdOrItem === 'string' ? storyIdOrItem : storyIdOrItem?.story?.id;
             if (storyId) {
+                // Track that script editor is being opened
+                storyTreeProvider.saveLastOpenedItem('script', storyId);
                 await openScript(storyId, storyService);
             }
         })

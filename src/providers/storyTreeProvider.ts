@@ -13,15 +13,395 @@ import { logger } from '../utils/logger';
 
 type TreeItemType = 'story' | 'script' | 'segments' | 'segment' | 'completed' | 'video' | 'source' | 'file' | 'assets' | 'asset';
 
+interface TreeViewState {
+    expandedNodes: string[];
+    selectedSegment?: {
+        storyId: string;
+        segmentIndex: number;
+        videoPath?: string;
+    };
+    lastOpenedItem?: {
+        nodeId: string;  // e.g., "video:story_123:5", "script:story_123", "file:story_123:segment_1.json"
+        type: TreeItemType;
+        storyId: string;
+        segmentIndex?: number;
+        filePath?: string;
+    };
+    wasViewVisible?: boolean;  // Track if ANY Sora view was visible when last saved
+    activeView?: 'soraStories' | 'soraAssets';  // Track which specific Sora view was active
+}
+
 export class StoryTreeProvider implements vscode.TreeDataProvider<StoryTreeItem> {
     private _onDidChangeTreeData: vscode.EventEmitter<StoryTreeItem | undefined | null | void> = new vscode.EventEmitter<StoryTreeItem | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<StoryTreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
+    private treeView?: vscode.TreeView<StoryTreeItem>;
+    private context?: vscode.ExtensionContext;
+    private treeItemCache: Map<string, StoryTreeItem> = new Map();
 
     constructor(private storyService: StoryService) {}
 
+    public setTreeView(treeView: vscode.TreeView<StoryTreeItem>, context: vscode.ExtensionContext): void {
+        this.treeView = treeView;
+        this.context = context;
+
+        // Listen to tree view expansion/collapse events
+        treeView.onDidExpandElement(e => {
+            this.saveExpandedState(e.element, true);
+        });
+
+        treeView.onDidCollapseElement(e => {
+            this.saveExpandedState(e.element, false);
+        });
+
+        // Restore previous state
+        this.restoreTreeViewState();
+    }
+
+    private getNodeId(element: StoryTreeItem): string {
+        // Create unique ID for tree nodes
+        if (element.type === 'story') {
+            return `story:${element.story?.id}`;
+        } else if (element.type === 'segments') {
+            return `segments:${element.story?.id}`;
+        } else if (element.type === 'segment') {
+            return `segment:${element.story?.id}:${element.segmentIndex}`;
+        } else if (element.type === 'video') {
+            return `video:${element.story?.id}:${element.segmentIndex}`;
+        } else if (element.type === 'source' || element.type === 'completed' || element.type === 'assets') {
+            return `${element.type}:${element.story?.id}`;
+        }
+        return `unknown:${Date.now()}`;
+    }
+
+    private saveExpandedState(element: StoryTreeItem, expanded: boolean): void {
+        if (!this.context) return;
+
+        const state = this.getTreeViewState();
+        const nodeId = this.getNodeId(element);
+
+        if (expanded) {
+            if (!state.expandedNodes.includes(nodeId)) {
+                state.expandedNodes.push(nodeId);
+                logger.info(`💾 Saved expanded node: ${nodeId}`);
+            }
+        } else {
+            state.expandedNodes = state.expandedNodes.filter(id => id !== nodeId);
+            logger.info(`💾 Saved collapsed node: ${nodeId}`);
+        }
+
+        this.context.workspaceState.update('storyTreeViewState', state);
+    }
+
+    private getTreeViewState(): TreeViewState {
+        if (!this.context) {
+            return { expandedNodes: [] };
+        }
+        return this.context.workspaceState.get<TreeViewState>('storyTreeViewState', { expandedNodes: [] });
+    }
+
+    public saveLastOpenedItem(type: TreeItemType, storyId: string, segmentIndex?: number, filePath?: string): void {
+        if (!this.context) {
+            logger.warn('⚠️ Cannot save last opened item - context not initialized');
+            return;
+        }
+
+        // Build the node ID
+        let nodeId = '';
+        if (type === 'video' && segmentIndex !== undefined) {
+            nodeId = `video:${storyId}:${segmentIndex}`;
+        } else if (type === 'segment' && segmentIndex !== undefined) {
+            nodeId = `segment:${storyId}:${segmentIndex}`;
+        } else if (type === 'script') {
+            nodeId = `script:${storyId}`;
+        } else if (type === 'file' && filePath) {
+            nodeId = `file:${storyId}:${filePath}`;
+        } else {
+            nodeId = `${type}:${storyId}`;
+        }
+
+        const state = this.getTreeViewState();
+        state.lastOpenedItem = {
+            nodeId,
+            type,
+            storyId,
+            segmentIndex,
+            filePath
+        };
+        // Don't automatically mark view as active - let visibility listener handle it
+        
+        this.context.workspaceState.update('storyTreeViewState', state);
+        logger.info(`💾 Saved last opened item: ${type} (${nodeId})`);
+    }
+
+    private async restoreTreeViewState(): Promise<void> {
+        if (!this.treeView || !this.context) return;
+
+        const state = this.getTreeViewState();
+        
+        logger.info(`Restoring tree view state: ${state.expandedNodes.length} expanded nodes, selected segment: ${state.selectedSegment ? `${state.selectedSegment.storyId}:${state.selectedSegment.segmentIndex}` : 'none'}, last opened item: ${state.lastOpenedItem ? state.lastOpenedItem.nodeId : 'none'}, was visible: ${state.wasViewVisible}, active view: ${state.activeView || 'none'}`);
+
+        // Only restore sidebar view if it was actually visible when saved
+        if (state.wasViewVisible) {
+            if (state.activeView === 'soraStories') {
+                logger.info('🎯 Restoring Sora Stories view in sidebar (it was active before)');
+                try {
+                    await vscode.commands.executeCommand('soraStories.focus');
+                } catch (error) {
+                    logger.warn('⚠️ Could not focus Sora Stories view:', error);
+                }
+            } else if (state.activeView === 'soraAssets') {
+                logger.info('🎯 Restoring Sora Assets view in sidebar (it was active before)');
+                try {
+                    await vscode.commands.executeCommand('soraAssets.focus');
+                } catch (error) {
+                    logger.warn('⚠️ Could not focus Sora Assets view:', error);
+                }
+            }
+        } else {
+            logger.info('ℹ️ Sora views were not visible before - not forcing them open');
+        }
+
+        // Short delay to ensure tree is fully initialized
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Sort node IDs by hierarchy depth (story -> segments -> segment -> video)
+        const sortedNodeIds = state.expandedNodes.sort((a, b) => {
+            const depthA = (a.match(/:/g) || []).length;
+            const depthB = (b.match(/:/g) || []).length;
+            return depthA - depthB;
+        });
+
+        // Restore expanded nodes in hierarchical order
+        for (const nodeId of sortedNodeIds) {
+            const element = await this.findElementByNodeId(nodeId);
+            if (element) {
+                try {
+                    await this.treeView.reveal(element, { expand: true, select: false, focus: false });
+                    // Small delay between expansions to allow tree to update
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                } catch (error) {
+                    logger.warn(`Failed to reveal node ${nodeId}:`, error);
+                }
+            }
+        }
+
+        // Restore selected segment video last (after all parents are expanded)
+        if (state.selectedSegment) {
+            const { storyId, segmentIndex, videoPath } = state.selectedSegment;
+            logger.info(`📍 Attempting to restore selected segment: ${storyId}:${segmentIndex}, videoPath: ${videoPath}`);
+            if (videoPath) {
+                try {
+                    // Add delay to ensure all parent nodes are expanded
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                    
+                    // Directly find and reveal the video node
+                    const videoNodeId = `video:${storyId}:${segmentIndex}`;
+                    const videoElement = await this.findElementByNodeId(videoNodeId);
+                    
+                    if (videoElement && this.treeView) {
+                        await this.treeView.reveal(videoElement, {
+                            select: true,
+                            focus: true,
+                            expand: true
+                        });
+                        logger.info(`✅ Restored selected video: ${storyId}:${segmentIndex}`);
+                    } else {
+                        logger.warn(`⚠️ Video element not found for: ${videoNodeId}`);
+                    }
+                } catch (error) {
+                    logger.warn('Failed to restore selected segment:', error);
+                }
+            } else {
+                logger.warn('⚠️ No videoPath in selected segment state');
+            }
+        } else {
+            logger.info('📍 No selected segment to restore');
+        }
+
+        // Restore last opened item
+        if (state.lastOpenedItem) {
+            const { type, nodeId, storyId, segmentIndex, filePath } = state.lastOpenedItem;
+            logger.info(`📂 Attempting to restore last opened item: ${type} (${nodeId})`);
+            
+            try {
+                // Add delay to ensure tree is fully restored
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                const story = this.storyService.getStory(storyId);
+                if (!story) {
+                    logger.warn(`⚠️ Could not find story: ${storyId}`);
+                    return;
+                }
+
+                switch (type) {
+                    case 'video':
+                        if (segmentIndex !== undefined && story.directorScript && story.directorScript[segmentIndex]) {
+                            const segment = story.directorScript[segmentIndex];
+                            if (segment.videoPath && fs.existsSync(segment.videoPath)) {
+                                await vscode.commands.executeCommand('sora.openVideoViewer', storyId, segmentIndex, segment.videoPath);
+                                logger.info(`✅ Restored video viewer: ${storyId}:${segmentIndex}`);
+                            } else {
+                                logger.warn(`⚠️ Video file not found for segment ${segmentIndex}`);
+                            }
+                        }
+                        break;
+
+                    case 'segment':
+                        if (segmentIndex !== undefined) {
+                            // filePath is stored in the state, use it if available, otherwise construct it
+                            const segmentPath = filePath || path.join(this.storyService.getStoryDirectory(storyId), 'segments', `segment_${segmentIndex + 1}.json`);
+                            logger.info(`🔍 Looking for segment file: ${segmentPath} (index: ${segmentIndex})`);
+                            if (fs.existsSync(segmentPath)) {
+                                const uri = vscode.Uri.file(segmentPath);
+                                await vscode.commands.executeCommand('vscode.open', uri);
+                                logger.info(`✅ Restored segment file: segment_${segmentIndex + 1}.json at ${segmentPath}`);
+                            } else {
+                                logger.warn(`⚠️ Segment file not found: ${segmentPath}`);
+                            }
+                        } else {
+                            logger.warn(`⚠️ No segmentIndex for segment restoration`);
+                        }
+                        break;
+
+                    case 'script':
+                        // Open script editor
+                        await vscode.commands.executeCommand('sora.openScript', storyId);
+                        logger.info(`✅ Restored script editor for story: ${storyId}`);
+                        break;
+
+                    case 'file':
+                        if (filePath && fs.existsSync(filePath)) {
+                            const uri = vscode.Uri.file(filePath);
+                            await vscode.commands.executeCommand('vscode.open', uri);
+                            logger.info(`✅ Restored file: ${filePath}`);
+                        } else {
+                            logger.warn(`⚠️ File not found: ${filePath}`);
+                        }
+                        break;
+
+                    default:
+                        logger.info(`ℹ️ No restoration handler for type: ${type}`);
+                }
+            } catch (error) {
+                logger.warn(`❌ Failed to restore ${type}:`, error);
+            }
+        } else {
+            logger.info('📂 No last opened item to restore');
+        }
+    }
+
+    private async findElementByNodeId(nodeId: string): Promise<StoryTreeItem | undefined> {
+        // First check if we already have this item in cache
+        const cachedItem = this.treeItemCache.get(nodeId);
+        if (cachedItem) {
+            return cachedItem;
+        }
+
+        // If not in cache, build the tree path to create and cache the item
+        const [type, ...parts] = nodeId.split(':');
+        
+        if (type === 'story') {
+            const storyId = parts[0];
+            // Trigger tree building by getting root stories
+            await this.getRootStories();
+            return this.treeItemCache.get(nodeId);
+        } else if (type === 'segments' || type === 'source' || type === 'completed' || type === 'assets' || type === 'script') {
+            const storyId = parts[0];
+            const story = this.storyService.getStory(storyId);
+            if (story) {
+                // Build parent first
+                const storyNodeId = `story:${storyId}`;
+                await this.findElementByNodeId(storyNodeId);
+                // Then build this level
+                await this.getStoryChildren(story);
+                return this.treeItemCache.get(nodeId);
+            }
+        } else if (type === 'segment') {
+            const storyId = parts[0];
+            const story = this.storyService.getStory(storyId);
+            if (story) {
+                // Build parent chain first
+                const segmentsNodeId = `segments:${storyId}`;
+                await this.findElementByNodeId(segmentsNodeId);
+                // Then build segments
+                await this.getSegmentChildren(story);
+                return this.treeItemCache.get(nodeId);
+            }
+        } else if (type === 'video') {
+            const storyId = parts[0];
+            const segmentIndex = parseInt(parts[1], 10);
+            const story = this.storyService.getStory(storyId);
+            if (story && story.directorScript && story.directorScript[segmentIndex]) {
+                // Build parent chain first
+                const segmentNodeId = `segment:${storyId}:${segmentIndex}`;
+                await this.findElementByNodeId(segmentNodeId);
+                // Then build video children
+                await this.getSegmentVideoChildren(story, story.directorScript[segmentIndex], segmentIndex);
+                return this.treeItemCache.get(nodeId);
+            }
+        }
+
+        return undefined;
+    }
+
     refresh(): void {
+        // Clear cache on refresh
+        this.treeItemCache.clear();
         this._onDidChangeTreeData.fire();
         logger.info('Story tree refreshed');
+    }
+
+    public async revealSegmentVideo(storyId: string, segmentIndex: number): Promise<void> {
+        if (!this.treeView) {
+            logger.warn('Tree view not initialized, cannot reveal segment');
+            return;
+        }
+
+        const story = this.storyService.getStory(storyId);
+        if (!story || !story.directorScript) {
+            logger.warn(`Story ${storyId} not found, cannot reveal segment`);
+            return;
+        }
+
+        const segment = story.directorScript[segmentIndex];
+        if (!segment || !segment.videoPath) {
+            logger.warn(`Segment ${segmentIndex} has no video, cannot reveal`);
+            return;
+        }
+
+        // Use findElementByNodeId to get the cached tree item
+        const videoNodeId = `video:${storyId}:${segmentIndex}`;
+        const videoItem = await this.findElementByNodeId(videoNodeId);
+        
+        if (!videoItem) {
+            logger.warn(`Could not find video item in cache for ${videoNodeId}`);
+            return;
+        }
+
+        try {
+            // Reveal the video item in the tree with focus and selection
+            await this.treeView.reveal(videoItem, {
+                select: true,
+                focus: true,
+                expand: true
+            });
+            
+            // Save the selected segment to state
+            if (this.context) {
+                const state = this.getTreeViewState();
+                state.selectedSegment = {
+                    storyId,
+                    segmentIndex,
+                    videoPath: segment.videoPath
+                };
+                this.context.workspaceState.update('storyTreeViewState', state);
+                logger.info(`💾 Saved selected segment: ${storyId}:${segmentIndex}`);
+            }
+            
+            logger.info(`✅ Revealed segment ${segmentIndex} video in tree view`);
+        } catch (error) {
+            logger.warn(`Failed to reveal segment video in tree:`, error);
+        }
     }
 
     getTreeItem(element: StoryTreeItem): vscode.TreeItem {
@@ -62,26 +442,32 @@ export class StoryTreeProvider implements vscode.TreeDataProvider<StoryTreeItem>
         
         console.log('🔍 StoryTreeProvider: Valid stories after filtering:', validStories.length);
         
-        return Promise.resolve(validStories.map(story => new StoryTreeItem(story, 'story', this.storyService)));
+        return Promise.resolve(validStories.map(story => {
+            const nodeId = `story:${story.id}`;
+            let item = this.treeItemCache.get(nodeId);
+            if (!item) {
+                item = new StoryTreeItem(story, 'story', this.storyService);
+                this.treeItemCache.set(nodeId, item);
+            }
+            return item;
+        }));
     }
 
     private getStoryChildren(story: Story): Thenable<StoryTreeItem[]> {
         const children: StoryTreeItem[] = [];
         
-        // Add Script element
-        children.push(new StoryTreeItem(story, 'script', this.storyService));
+        const childTypes: Array<'script' | 'segments' | 'completed' | 'source' | 'assets'> = 
+            ['script', 'segments', 'completed', 'source', 'assets'];
         
-        // Add Segments folder
-        children.push(new StoryTreeItem(story, 'segments', this.storyService));
-        
-        // Add Completed folder
-        children.push(new StoryTreeItem(story, 'completed', this.storyService));
-        
-        // Add Source folder
-        children.push(new StoryTreeItem(story, 'source', this.storyService));
-        
-        // Add Assets folder
-        children.push(new StoryTreeItem(story, 'assets', this.storyService));
+        for (const type of childTypes) {
+            const nodeId = `${type}:${story.id}`;
+            let item = this.treeItemCache.get(nodeId);
+            if (!item) {
+                item = new StoryTreeItem(story, type, this.storyService);
+                this.treeItemCache.set(nodeId, item);
+            }
+            children.push(item);
+        }
         
         console.log('🔍 StoryTreeProvider: Created', children.length, 'child elements for story:', story.name);
         
@@ -93,7 +479,13 @@ export class StoryTreeProvider implements vscode.TreeDataProvider<StoryTreeItem>
         
         if (story.directorScript && story.directorScript.length > 0) {
             story.directorScript.forEach((segment, index) => {
-                children.push(new StoryTreeItem(story, 'segment', this.storyService, segment, index));
+                const nodeId = `segment:${story.id}:${index}`;
+                let item = this.treeItemCache.get(nodeId);
+                if (!item) {
+                    item = new StoryTreeItem(story, 'segment', this.storyService, segment, index);
+                    this.treeItemCache.set(nodeId, item);
+                }
+                children.push(item);
             });
         }
         
@@ -107,7 +499,13 @@ export class StoryTreeProvider implements vscode.TreeDataProvider<StoryTreeItem>
         
         // If segment has a videoPath, add it as a child
         if (segment?.videoPath && fs.existsSync(segment.videoPath)) {
-            children.push(new StoryTreeItem(story, 'video', this.storyService, segment, segmentIndex, segment.videoPath));
+            const nodeId = `video:${story.id}:${segmentIndex}`;
+            let item = this.treeItemCache.get(nodeId);
+            if (!item) {
+                item = new StoryTreeItem(story, 'video', this.storyService, segment, segmentIndex, segment.videoPath);
+                this.treeItemCache.set(nodeId, item);
+            }
+            children.push(item);
         }
         
         console.log('🔍 StoryTreeProvider: Segment', segmentIndex, 'has', children.length, 'video(s)');
@@ -456,9 +854,9 @@ export class StoryTreeItem extends vscode.TreeItem {
                         `segment_${(this.segmentIndex || 0) + 1}.json`
                     );
                     return {
-                        command: 'vscode.open',
+                        command: 'sora.openSegmentFile',
                         title: 'Open Segment Editor',
-                        arguments: [vscode.Uri.file(segmentPath)]
+                        arguments: [this.story.id, this.segmentIndex, segmentPath]
                     };
                 }
                 break;
