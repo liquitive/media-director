@@ -443,25 +443,56 @@ When you receive a request:
 5. Match segment text from context.segments[].text
 6. Follow themes from context.research
 
-🎬 CROSS-SEGMENT CONTINUITY ANALYSIS:
-For each segment, analyze:
-- Which characters appear (characterFocus)
-- What location/setting is used (locationContinuity) 
-- What emotional tone/mood (emotionalTone)
-- What type of scene (sceneType: establishing/action/dialogue/transition)
+🎬 CRITICAL: INTELLIGENT CONTINUITY REFERENCE SELECTION
+You MUST use logical reasoning to select the correct continuityReference. DO NOT blindly use the previous segment.
 
-Then determine the BEST continuity reference:
-- For character continuity: Reference segments with the same character/s
-- For location continuity: Reference segments in the same location/setting
-- For emotional continuity: Reference segments with similar emotional tone
-- For narrative flow: Reference the most thematically similar previous segment
+CONTINUITY ANALYSIS PROCESS:
+For EACH segment, systematically analyze:
+1. **Character Analysis**: Which specific characters appear in this segment?
+2. **Location Analysis**: What is the setting/location?
+3. **Scene Type**: Is this establishing, action, dialogue, or transition?
+4. **Emotional Tone**: What is the mood/feeling?
 
-CONTINUITY RULES:
-- First segment: continuityType = "none" (no reference)
-- Character scenes: Reference the most recent segment with the same primary character
-- Location scenes: Reference the most recent segment in the same location
-- Emotional scenes: Reference segments with similar emotional tone
-- Transition scenes: Reference the previous segment for smooth flow
+CONTINUITY REFERENCE LOGIC (THINK CRITICALLY):
+❌ WRONG: Always referencing segment_N-1 (previous segment)
+✅ CORRECT: Reference the LAST segment that shares the SAME narrative elements
+
+**Character Continuity (MOST IMPORTANT):**
+- If segment features "Character A" → Find the MOST RECENT segment that ALSO featured "Character A"
+- SKIP over segments that featured different characters or no characters
+- Example: If segment_20 has "John", but segment_19 had "Mary" and segment_17 had "John"
+  → continuityReference = "segment_17" (NOT segment_19!)
+  
+**Location Continuity:**
+- If returning to a previously seen location → Reference the LAST segment in that location
+- SKIP segments in different locations
+- Example: If segment_25 returns to "forest", but segment_24 was "city" and segment_22 was "forest"
+  → continuityReference = "segment_22" (NOT segment_24!)
+
+**Scene Continuity Rules:**
+- **Character-focused scenes**: Reference the last segment with the SAME character(s)
+- **Location-focused scenes**: Reference the last segment in the SAME location
+- **Continuation scenes**: If narrative directly continues, reference the immediate previous segment
+- **New scenes**: If introducing new character/location, use continuityType = "none"
+- **Intercut scenes**: If cutting between multiple storylines, track each storyline separately
+
+**Critical Thinking Examples:**
+Segment Flow: [A with John] → [B with Mary] → [C with John]
+- Segment C continuityReference = "segment_A" (skip B, it's different character)
+
+Segment Flow: [Forest scene] → [City scene] → [Forest scene again]
+- Third segment continuityReference = "segment_1" (skip city scene)
+
+Segment Flow: [John intro] → [Unrelated scene] → [Unrelated scene] → [John again]
+- Fourth segment continuityReference = "segment_1" (skip unrelated segments)
+
+**Always populate narrativeContext to enable smart matching:**
+- characterFocus: ["Character Name"] - List ALL primary characters
+- locationContinuity: "specific location name"
+- sceneType: "establishing" | "action" | "dialogue" | "transition"
+- emotionalTone: descriptive mood
+
+This ensures visual consistency when a character or location reappears after being absent for multiple segments.
 
 📝 EDITOR'S GUIDANCE INTEGRATION:
 If editor's notes are provided, incorporate them into your analysis:
@@ -543,6 +574,27 @@ Instructions:
    - narrativeContext: (optional) Context for continuity matching
 3) Always call the function generateSegments with a single JSON argument of shape {"segments": [...]}.
 4) Output must be STRICT JSON in the function args. No prose, no markdown, no comments.
+
+🎬 CRITICAL: INTELLIGENT CONTINUITY REFERENCE SELECTION
+Use logical reasoning to select continuityReference. DO NOT blindly use the previous segment.
+
+**Character Continuity (MOST IMPORTANT):**
+- When a character appears → Reference the MOST RECENT segment with that SAME character
+- SKIP over segments featuring different characters
+- Example: segment_20 has "John", segment_19 had "Mary", segment_17 had "John"
+  → continuityReference = "segment_17" (NOT segment_19!)
+
+**Location Continuity:**
+- When returning to a location → Reference the LAST segment in that SAME location
+- SKIP segments in different locations
+
+**Always populate narrativeContext:**
+- characterFocus: ["Character Name"] - ALL primary characters in this segment
+- locationContinuity: "specific location"
+- sceneType: "establishing" | "action" | "dialogue" | "transition"
+- emotionalTone: descriptive mood
+
+This ensures visual consistency when characters/locations reappear after multiple segments.
 
 📝 EDITOR'S GUIDANCE:
 If context.editorsNotes is provided, incorporate the guidance into your prompts:
