@@ -1646,8 +1646,19 @@ ${contextJson}
     cancelOnTimeout: boolean = true
   ): Promise<any> {
     const started = Date.now();
+    let pollCount = 0;
+    let lastLoggedStatus: string | null = null;
+    
     while (true) {
       const run = await this.openai.beta.threads.runs.retrieve(runId, { thread_id: threadId });
+      pollCount++;
+      
+      // Log status changes or every 10 polls (5 seconds)
+      if (run.status !== lastLoggedStatus || pollCount % 10 === 0) {
+        const elapsed = Math.round((Date.now() - started) / 1000);
+        this.errorLogger.logInfo('system', `    Poll ${pollCount}: Run ${runId} status: ${run.status} (${elapsed}s elapsed, waiting for: ${targets.join('|')})`);
+        lastLoggedStatus = run.status;
+      }
       
       // If we hit a terminal error state (expired, failed, cancelled), throw immediately
       if (run.status === 'expired') {
@@ -1665,6 +1676,7 @@ ${contextJson}
       
       // Check if we reached target state
       if (targets.includes(run.status as any)) {
+        this.errorLogger.logInfo('system', `    ✓ Run ${runId} reached target state: ${run.status}`);
         return run;
       }
       
