@@ -498,40 +498,46 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
     }
 
     /**
-     * Poll for video generation status
+     * Poll for video generation status with intelligent progress-based monitoring
+     * Continues polling as long as progress is being made - no arbitrary timeout
      */
     private async pollVideoStatus(videoId: string, maxAttempts: number = 60, progressCallback?: (progress: number, message: string) => void): Promise<{ id: string; url?: string }> {
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const progressHistory: number[] = [];
+        const STALL_CHECK_WINDOW = 20; // Check if progress stalled over last 20 attempts
+        const STALL_THRESHOLD = 0.1; // Progress must increase by at least 0.1% on average
+        let attempt = 0;
+        
+        // Poll indefinitely until completion, failure, or stall
+        while (true) {
+            attempt++;
+            
             try {
                 const video = await (this.client as any).videos.retrieve(videoId);
+                const currentProgress = video.progress || 0;
                 
-                logger.info(`Video ${videoId} status: ${video.status}, progress: ${video.progress || 0}%`);
-                logger.info(`Video object keys: ${Object.keys(video).join(', ')}`);
+                logger.info(`🎬 Video ${videoId} - Attempt ${attempt}: status=${video.status}, progress=${currentProgress}%`);
                 
-                // Update progress based on API response or polling attempt
+                // Update progress callback for UI
                 if (progressCallback) {
-                    // If API provides progress, use it (scale from 10-85% range)
-                    const apiProgress = video.progress || 0;
-                    const scaledProgress = 10 + Math.floor((apiProgress / 100) * 75);
-                    
-                    // Otherwise estimate based on polling attempts (videos usually take 20-60 polls)
-                    const estimatedProgress = 10 + Math.floor((attempt / maxAttempts) * 75);
-                    
-                    const currentProgress = apiProgress > 0 ? scaledProgress : estimatedProgress;
+                    const scaledProgress = 10 + Math.floor((currentProgress / 100) * 75);
                     const statusMsg = video.status === 'processing' || video.status === 'generating' 
-                        ? `Generating video... ${apiProgress > 0 ? apiProgress + '%' : 'processing'}`
-                        : `Checking status (${attempt + 1}/${maxAttempts})...`;
+                        ? `Generating video... ${currentProgress}%`
+                        : `Status: ${video.status} (${currentProgress}%)`;
                     
-                    progressCallback(currentProgress, statusMsg);
+                    progressCallback(scaledProgress, statusMsg);
                 }
                 
+                // ✅ SUCCESS: Video completed
                 if (video.status === 'completed') {
+                    logger.info(`✅ Video ${videoId} completed after ${attempt} attempts (${Math.round(attempt * 10 / 60)} minutes)`);
                     return {
                         id: video.id,
-                        url: `https://api.openai.com/v1/videos/${video.id}/content`
+                        url: video.output_url || video.url || video.file_url || `https://api.openai.com/v1/videos/${video.id}/content`
                     };
-                } else if (video.status === 'failed') {
-                    const errorDetail = JSON.stringify((video as any).error || video, null, 2);
+                }
+                
+                // ❌ FAILURE: Sora reported error
+                if (video.status === 'failed') {
                     logger.error(`❌ Video generation failed by Sora API. Full video object: ${JSON.stringify(video, null, 2)}`);
                     
                     const errorCode = (video as any).error?.code || 'unknown';
@@ -541,75 +547,51 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
                 }
                 
                 // Check if video has output_url even if status isn't "completed"
-                // Some APIs use different status values
                 if (video.output_url || video.url || video.file_url) {
-                    logger.info(`Video has URL despite status ${video.status}: ${video.output_url || video.url || video.file_url}`);
+                    logger.info(`✅ Video ${videoId} has download URL despite status ${video.status}`);
                     return {
                         id: video.id,
                         url: video.output_url || video.url || video.file_url
                     };
                 }
                 
+                // Track progress history for stall detection
+                progressHistory.push(currentProgress);
+                
+                // 🔍 STALL DETECTION: Check if progress has stalled over last N attempts
+                if (progressHistory.length >= STALL_CHECK_WINDOW) {
+                    const recentProgress = progressHistory.slice(-STALL_CHECK_WINDOW);
+                    const progressIncrease = recentProgress[recentProgress.length - 1] - recentProgress[0];
+                    const avgIncrease = progressIncrease / STALL_CHECK_WINDOW;
+                    
+                    if (avgIncrease < STALL_THRESHOLD && currentProgress < 100) {
+                        logger.error(`⚠️  Video generation appears stalled: only ${progressIncrease.toFixed(2)}% progress over last ${STALL_CHECK_WINDOW} attempts (avg ${avgIncrease.toFixed(3)}%/attempt)`);
+                        throw new Error(`Video generation stalled: progress has not increased significantly over last ${STALL_CHECK_WINDOW} attempts (${Math.round(STALL_CHECK_WINDOW * 10 / 60)} minutes). Current: ${currentProgress}%, Status: ${video.status}. Video ID: ${videoId}`);
+                    }
+                    
+                    logger.info(`📈 Progress trending: +${progressIncrease.toFixed(2)}% over last ${STALL_CHECK_WINDOW} attempts (avg ${avgIncrease.toFixed(3)}%/attempt) - continuing...`);
+                }
+                
                 // Wait before next poll
                 await this.sleep(10000); // 10 seconds
-            } catch (error: any) {
-                logger.error(`Error polling video status (attempt ${attempt + 1}):`, error);
                 
-                // If video generation failed (not a network error), throw immediately - don't retry
+            } catch (error: any) {
+                logger.error(`❌ Error polling video status (attempt ${attempt}):`, error);
+                
+                // If video generation failed (Sora error), throw immediately - don't retry
                 const errorMessage = error?.message?.toLowerCase() || '';
-                if (errorMessage.includes('video generation failed') || errorMessage.includes('video_generation_failed')) {
+                if (errorMessage.includes('video generation failed') || 
+                    errorMessage.includes('video_generation_failed') ||
+                    errorMessage.includes('stalled')) {
                     logger.error('❌ Video generation failed permanently - not retrying');
                     throw error;
                 }
                 
-                // For other errors (network, etc), retry unless last attempt
-                if (attempt === maxAttempts - 1) {
-                    throw error;
-                }
+                // For network errors, retry with backoff
+                logger.warn(`⚠️  Network/API error - retrying in 10s...`);
                 await this.sleep(10000);
             }
         }
-        
-        // Timeout reached - video still generating but we've waited too long
-        logger.error(`⏱️  Video ${videoId} timeout: Still generating after ${maxAttempts} attempts (${maxAttempts * 10 / 60} minutes)`);
-        throw new Error(`Video generation timeout: Video ${videoId} is still generating after ${maxAttempts * 10 / 60} minutes. The video may complete later - you can check its status manually or retry this segment. Video ID: ${videoId}`);
-    }
-
-    /**
-     * Check video status by ID (useful for resuming timed-out videos)
-     */
-    async checkVideoStatus(videoId: string): Promise<{ status: string; progress?: number; url?: string; error?: any }> {
-        try {
-            const video = await (this.client as any).videos.retrieve(videoId);
-            
-            return {
-                status: video.status,
-                progress: video.progress,
-                url: video.output_url || video.url || video.file_url,
-                error: video.error
-            };
-        } catch (error) {
-            logger.error(`Error checking video status for ${videoId}:`, error);
-            throw error;
-        }
-    }
-
-    /**
-     * Resume polling for a video that previously timed out
-     */
-    async resumeVideoPolling(videoId: string, storyDirectoryPath?: string, progressCallback?: (progress: number, message: string) => void): Promise<{ id: string; url?: string }> {
-        logger.info(`🔄 Resuming polling for video: ${videoId}`);
-        
-        // Poll with extended timeout (video might be close to completion)
-        const completedVideo = await this.pollVideoStatus(videoId, 60, progressCallback);
-        
-        // Download if completed
-        const localVideoPath = await this.downloadVideoToLocal(completedVideo.id, completedVideo.url, storyDirectoryPath);
-        
-        return {
-            id: completedVideo.id,
-            url: localVideoPath
-        };
     }
 
     /**
