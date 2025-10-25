@@ -235,6 +235,12 @@
         "icon": "$(book)"
       },
       {
+        "command": "sora.openSegmentEditorPanel",
+        "title": "Edit Segment",
+        "category": "Sora",
+        "icon": "$(edit)"
+      },
+      {
         "command": "sora.openScript",
         "title": "Open Script",
         "category": "Sora"
@@ -484,9 +490,14 @@
           "group": "actions@1"
         },
         {
-          "command": "sora.editSegment",
+          "command": "sora.openSegmentEditorPanel",
           "when": "view == soraStories && viewItem == segment",
           "group": "edit@1"
+        },
+        {
+          "command": "sora.editSegment",
+          "when": "view == soraStories && viewItem == segment",
+          "group": "edit@2"
         },
         {
           "command": "sora.previewSegment",

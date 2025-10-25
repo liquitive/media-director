@@ -203,6 +203,31 @@ export function registerCommands(context: vscode.ExtensionContext, services: Ser
         })
     );
 
+    // Open segment editor panel
+    context.subscriptions.push(
+        vscode.commands.registerCommand('sora.openSegmentEditorPanel', async (storyIdOrItem: any, segmentIndexArg?: number) => {
+            let storyId: string | undefined;
+            let segmentIndex: number | undefined;
+            
+            // Handle different argument formats
+            if (typeof storyIdOrItem === 'string') {
+                // Called with (storyId, segmentIndex)
+                storyId = storyIdOrItem;
+                segmentIndex = segmentIndexArg;
+            } else if (storyIdOrItem?.story?.id) {
+                // Called from tree view with StoryTreeItem
+                storyId = storyIdOrItem.story.id;
+                segmentIndex = storyIdOrItem.segmentIndex;
+            } else if (storyIdOrItem?.id) {
+                // Called with just story object
+                storyId = storyIdOrItem.id;
+                segmentIndex = segmentIndexArg;
+            }
+            
+            await openSegmentEditorPanel(storyService, storyId, segmentIndex, context);
+        })
+    );
+
     // Manual story editing commands
     context.subscriptions.push(
         vscode.commands.registerCommand('sora.editStoryDetails', async (storyIdOrItem: any) => {
@@ -2683,5 +2708,235 @@ function getEmbeddedEditResearchHTML(): string {
     </script>
 </body>
 </html>`;
+}
+
+/**
+ * Open Segment Editor Panel in a webview
+ */
+async function openSegmentEditorPanel(
+    storyService: StoryService, 
+    storyId?: string, 
+    segmentIndex?: number, 
+    context?: vscode.ExtensionContext
+) {
+    try {
+        // Get the story
+        let currentStory;
+        if (storyId) {
+            currentStory = storyService.getStory(storyId);
+        } else {
+            const stories = storyService.getAllStories();
+            if (stories.length === 0) {
+                Notifications.error('No stories available');
+                return;
+            }
+            currentStory = stories[0];
+            storyId = currentStory.id;
+        }
+
+        if (!currentStory) {
+            Notifications.error('Story not found');
+            return;
+        }
+
+        // Get segments
+        if (!currentStory.directorScript || currentStory.directorScript.length === 0) {
+            Notifications.error('No segments available for this story');
+            return;
+        }
+
+        // Default to first segment if not specified
+        if (segmentIndex === undefined || segmentIndex < 0) {
+            segmentIndex = 0;
+        }
+
+        // Validate segment index
+        if (segmentIndex >= currentStory.directorScript.length) {
+            Notifications.error(`Segment index ${segmentIndex} out of range`);
+            return;
+        }
+
+        // Create and show webview panel
+        const panel = vscode.window.createWebviewPanel(
+            'soraSegmentEditor',
+            `Segment Editor - Segment ${segmentIndex + 1}`,
+            vscode.ViewColumn.One,
+            {
+                enableScripts: true,
+                retainContextWhenHidden: true,
+                localResourceRoots: []
+            }
+        );
+
+        // Load HTML content
+        let htmlContent: string;
+        try {
+            const htmlPath = vscode.Uri.joinPath(context!.extensionUri, 'src', 'webviews', 'segmentEditorPanel.html');
+            htmlContent = require('fs').readFileSync(htmlPath.fsPath, 'utf8');
+        } catch (error) {
+            try {
+                const htmlPath = require('path').join(__dirname, '../../src/webviews/segmentEditorPanel.html');
+                htmlContent = require('fs').readFileSync(htmlPath, 'utf8');
+            } catch (error2) {
+                Notifications.error('Failed to load segment editor HTML');
+                logger.error('Failed to load segment editor HTML:', error2);
+                return;
+            }
+        }
+        panel.webview.html = htmlContent;
+
+        // Store current state
+        let currentSegmentIndex = segmentIndex;
+
+        // Handle messages from webview
+        panel.webview.onDidReceiveMessage(
+            async message => {
+                switch (message.command) {
+                    case 'loadSegment':
+                        if (message.segmentIndex !== undefined) {
+                            currentSegmentIndex = message.segmentIndex;
+                        }
+                        await handleLoadSegment(panel.webview, storyService, storyId!, currentSegmentIndex);
+                        break;
+                    case 'saveSegment':
+                        await handleSaveSegment(message.segment, panel.webview, storyService, storyId!, currentSegmentIndex);
+                        break;
+                }
+            },
+            undefined,
+            []
+        );
+
+        // Load segment when panel becomes visible
+        panel.onDidChangeViewState(e => {
+            if (e.webviewPanel.visible) {
+                handleLoadSegment(panel.webview, storyService, storyId!, currentSegmentIndex);
+            }
+        });
+
+        // Initial load
+        setTimeout(() => {
+            handleLoadSegment(panel.webview, storyService, storyId!, currentSegmentIndex);
+        }, 100);
+
+        logger.info(`Segment editor panel opened for story ${storyId}, segment ${segmentIndex}`);
+    } catch (error) {
+        logger.error('Failed to open segment editor panel:', error);
+        Notifications.error(`Failed to open segment editor: ${error}`);
+    }
+}
+
+/**
+ * Handle loading segment data in the webview
+ */
+async function handleLoadSegment(
+    webview: vscode.Webview, 
+    storyService: StoryService, 
+    storyId: string, 
+    segmentIndex: number
+) {
+    try {
+        const story = storyService.getStory(storyId);
+        if (!story || !story.directorScript || story.directorScript.length === 0) {
+            webview.postMessage({
+                command: 'loadSegment',
+                segment: null
+            });
+            return;
+        }
+
+        // Validate segment index
+        if (segmentIndex < 0 || segmentIndex >= story.directorScript.length) {
+            webview.postMessage({
+                command: 'loadSegment',
+                segment: null
+            });
+            return;
+        }
+
+        // Load segment from file if it exists, otherwise use in-memory data
+        const storyDir = storyService.getStoryDirectory(storyId);
+        const segmentPath = path.join(storyDir, 'segments', `segment_${segmentIndex + 1}.json`);
+        
+        let segment;
+        if (fs.existsSync(segmentPath)) {
+            const segmentJson = fs.readFileSync(segmentPath, 'utf8');
+            segment = JSON.parse(segmentJson);
+            logger.info(`Loaded segment from file: ${segmentPath}`);
+        } else {
+            segment = story.directorScript[segmentIndex];
+            logger.info(`Using in-memory segment data for index ${segmentIndex}`);
+        }
+
+        // Send segment data along with all segments for the selector
+        webview.postMessage({
+            command: 'loadSegment',
+            segment: segment,
+            allSegments: story.directorScript
+        });
+    } catch (error) {
+        logger.error('Error loading segment:', error);
+        webview.postMessage({
+            command: 'loadSegment',
+            segment: null
+        });
+    }
+}
+
+/**
+ * Handle saving segment data from the webview
+ */
+async function handleSaveSegment(
+    updatedSegment: any, 
+    webview: vscode.Webview, 
+    storyService: StoryService, 
+    storyId: string, 
+    segmentIndex: number
+) {
+    try {
+        const story = storyService.getStory(storyId);
+        if (!story || !story.directorScript || segmentIndex >= story.directorScript.length) {
+            webview.postMessage({
+                command: 'saveResult',
+                success: false,
+                error: 'Story or segment not found'
+            });
+            return;
+        }
+
+        // Update the segment in the story's directorScript
+        story.directorScript[segmentIndex] = updatedSegment;
+
+        // Save to file
+        const storyDir = storyService.getStoryDirectory(storyId);
+        const segmentsDir = path.join(storyDir, 'segments');
+        
+        // Ensure segments directory exists
+        if (!fs.existsSync(segmentsDir)) {
+            fs.mkdirSync(segmentsDir, { recursive: true });
+        }
+
+        const segmentPath = path.join(segmentsDir, `segment_${segmentIndex + 1}.json`);
+        fs.writeFileSync(segmentPath, JSON.stringify(updatedSegment, null, 2), 'utf8');
+
+        // Update story in memory
+        storyService.updateStory(storyId, story);
+
+        webview.postMessage({
+            command: 'saveResult',
+            success: true
+        });
+
+        logger.info(`Segment ${segmentIndex} saved for story ${storyId}`);
+        Notifications.info(`Segment ${segmentIndex + 1} saved successfully`);
+    } catch (error) {
+        logger.error('Error saving segment:', error);
+        webview.postMessage({
+            command: 'saveResult',
+            success: false,
+            error: String(error)
+        });
+        Notifications.error(`Failed to save segment: ${error}`);
+    }
 }
 

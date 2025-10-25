@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Segment Editor</title>
+    <style>
+        :root {
+            --vscode-font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+            --vscode-font-size: var(--vscode-font-size, 13px);
+            --vscode-font-weight: var(--vscode-font-weight, 400);
+            --vscode-editor-background: var(--vscode-editor-background, #ffffff);
+            --vscode-editor-foreground: var(--vscode-editor-foreground, #000000);
+            --vscode-panel-background: var(--vscode-panel-background, #f3f3f3);
+            --vscode-panel-border: var(--vscode-panel-border, #e1e1e1);
+            --vscode-input-background: var(--vscode-input-background, #ffffff);
+            --vscode-input-foreground: var(--vscode-input-foreground, #000000);
+            --vscode-input-border: var(--vscode-input-border, #cccccc);
+            --vscode-button-background: var(--vscode-button-background, #0e639c);
+            --vscode-button-foreground: var(--vscode-button-foreground, #ffffff);
+            --vscode-button-hoverBackground: var(--vscode-button-hoverBackground, #1177bb);
+            --vscode-button-secondaryBackground: var(--vscode-button-secondaryBackground, #5a5a5a);
+            --vscode-button-secondaryForeground: var(--vscode-button-secondaryForeground, #ffffff);
+            --vscode-button-secondaryHoverBackground: var(--vscode-button-secondaryHoverBackground, #6a6a6a);
+            --vscode-focusBorder: var(--vscode-focusBorder, #007acc);
+        }
+
+        body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            font-weight: var(--vscode-font-weight);
+            margin: 0;
+            padding: 20px;
+            background-color: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            color: var(--vscode-editor-foreground);
+            margin-bottom: 10px;
+            border-bottom: 2px solid var(--vscode-focusBorder);
+            padding-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .segment-badge {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .readonly-info {
+            font-size: 12px;
+            color: var(--vscode-editor-foreground);
+            opacity: 0.6;
+            margin-bottom: 30px;
+        }
+        
+        .section {
+            margin-bottom: 30px;
+            background: var(--vscode-panel-background);
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid var(--vscode-panel-border);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        
+        .section h3 {
+            color: var(--vscode-editor-foreground);
+            margin-top: 0;
+            margin-bottom: 15px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        
+        .section p {
+            color: var(--vscode-editor-foreground);
+            margin-bottom: 15px;
+            font-size: 14px;
+            opacity: 0.8;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            color: var(--vscode-editor-foreground);
+        }
+
+        input[type="text"],
+        input[type="number"],
+        select,
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 6px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            font-family: inherit;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        
+        textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+        
+        input:focus,
+        select:focus,
+        textarea:focus {
+            outline: none;
+            border-color: var(--vscode-focusBorder);
+            box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.2);
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .btn-primary {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+        }
+        
+        .btn-primary:hover {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+        
+        .btn-secondary {
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
+        
+        .btn-secondary:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
+        
+        .status {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        
+        .status.success {
+            background-color: rgba(40, 167, 69, 0.1);
+            color: #28a745;
+            border: 1px solid #28a745;
+        }
+        
+        .status.error {
+            background-color: rgba(220, 53, 69, 0.1);
+            color: #dc3545;
+            border: 1px solid #dc3545;
+        }
+        
+        .help-text {
+            font-size: 12px;
+            color: var(--vscode-editor-foreground);
+            margin-top: 5px;
+            opacity: 0.6;
+        }
+
+        .readonly-field {
+            background-color: var(--vscode-panel-background);
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid var(--vscode-panel-border);
+            font-size: 13px;
+            color: var(--vscode-editor-foreground);
+            opacity: 0.8;
+        }
+
+        .segment-selector {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            background: var(--vscode-panel-background);
+            border-radius: 6px;
+        }
+
+        .segment-selector select {
+            flex: 1;
+        }
+
+        .continuity-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            margin-left: 5px;
+        }
+
+        .continuity-badge.location {
+            background-color: rgba(0, 122, 204, 0.2);
+            color: #007acc;
+        }
+
+        .continuity-badge.character {
+            background-color: rgba(40, 167, 69, 0.2);
+            color: #28a745;
+        }
+
+        .continuity-badge.none {
+            background-color: rgba(108, 117, 125, 0.2);
+            color: #6c757d;
+        }
+
+        .continuity-badge.visual {
+            background-color: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>
+            🎬 Segment Editor
+            <span class="segment-badge" id="segmentBadge">Segment 1</span>
+        </h1>
+        <div class="readonly-info">
+            <strong>Read-only fields:</strong> version, storyId, segmentIndex, createdAt, id, text, status
+        </div>
+
+        <!-- Segment Selector -->
+        <div class="segment-selector">
+            <label for="segmentSelector"><strong>Current Segment:</strong></label>
+            <select id="segmentSelector">
+                <!-- Populated dynamically -->
+            </select>
+        </div>
+        
+        <!-- Read-only Information -->
+        <div class="section">
+            <h3>📋 Segment Information (Read-only)</h3>
+            <div class="grid-2">
+                <div class="form-group">
+                    <label>Segment ID</label>
+                    <div class="readonly-field" id="segmentId">-</div>
+                </div>
+                <div class="form-group">
+                    <label>Status</label>
+                    <div class="readonly-field" id="status">-</div>
+                </div>
+            </div>
+            <div class="grid-2">
+                <div class="form-group">
+                    <label>Story ID</label>
+                    <div class="readonly-field" id="storyId">-</div>
+                </div>
+                <div class="form-group">
+                    <label>Segment Index</label>
+                    <div class="readonly-field" id="segmentIndex">-</div>
+                </div>
+            </div>
+            <div class="grid-2">
+                <div class="form-group">
+                    <label>Created At</label>
+                    <div class="readonly-field" id="createdAt">-</div>
+                </div>
+                <div class="form-group">
+                    <label>Version</label>
+                    <div class="readonly-field" id="version">-</div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Text/Narration (from audio transcript)</label>
+                <div class="readonly-field" id="text">-</div>
+            </div>
+        </div>
+
+        <!-- Editable: Prompt -->
+        <div class="section">
+            <h3>✍️ Video Prompt</h3>
+            <p>The main prompt that describes the visual content for this segment.</p>
+            <textarea id="prompt" placeholder="Describe the visual scene, camera work, lighting, mood, and any specific details..."></textarea>
+            <div class="help-text">This is the core prompt sent to Sora for video generation. Be descriptive and specific.</div>
+        </div>
+
+        <!-- Editable: Duration and Timing -->
+        <div class="section">
+            <h3>⏱️ Timing</h3>
+            <div class="grid-2">
+                <div class="form-group">
+                    <label for="duration">Duration (seconds)</label>
+                    <input type="number" id="duration" min="2" max="20" step="0.1" placeholder="4.0">
+                    <div class="help-text">Segment duration in seconds</div>
+                </div>
+                <div class="form-group">
+                    <label for="startTime">Start Time (seconds)</label>
+                    <input type="number" id="startTime" min="0" step="0.1" placeholder="0.0">
+                    <div class="help-text">When this segment starts in the overall video</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Editable: Continuity Reference -->
+        <div class="section">
+            <h3>🔗 Continuity Reference</h3>
+            <p>Link this segment to a previous segment for visual continuity (character appearance, location, lighting, etc.)</p>
+            <div class="form-group">
+                <label for="continuityReference">Reference Segment</label>
+                <select id="continuityReference">
+                    <option value="">None (standalone segment)</option>
+                    <!-- Populated dynamically with available segments -->
+                </select>
+                <div class="help-text">Select which segment's visual style to continue from</div>
+            </div>
+            <div class="form-group">
+                <label for="continuityType">Continuity Type</label>
+                <select id="continuityType">
+                    <option value="">None</option>
+                    <option value="location">Location (same setting)</option>
+                    <option value="character">Character (same character(s))</option>
+                    <option value="visual">Visual (same style/lighting)</option>
+                    <option value="action">Action (continuous action)</option>
+                </select>
+                <div class="help-text">What type of continuity is being maintained?</div>
+            </div>
+        </div>
+
+        <!-- Editable: Narrative Context -->
+        <div class="section">
+            <h3>🎭 Narrative Context</h3>
+            <p>Provide context to help the AI understand the narrative purpose of this segment.</p>
+            
+            <div class="form-group">
+                <label for="sceneType">Scene Type</label>
+                <select id="sceneType">
+                    <option value="">Select scene type...</option>
+                    <option value="establishing">Establishing (setting/location intro)</option>
+                    <option value="action">Action (movement/events)</option>
+                    <option value="dialogue">Dialogue (character interaction)</option>
+                    <option value="transition">Transition (scene change)</option>
+                    <option value="climax">Climax (peak moment)</option>
+                    <option value="resolution">Resolution (conclusion)</option>
+                </select>
+                <div class="help-text">What type of scene is this?</div>
+            </div>
+
+            <div class="form-group">
+                <label for="characterFocus">Character Focus</label>
+                <input type="text" id="characterFocus" placeholder="e.g., John, Mary">
+                <div class="help-text">Which character(s) appear in this segment? (comma-separated)</div>
+            </div>
+
+            <div class="form-group">
+                <label for="locationContinuity">Location</label>
+                <input type="text" id="locationContinuity" placeholder="e.g., Patmos Island, John's cave">
+                <div class="help-text">Where does this segment take place?</div>
+            </div>
+
+            <div class="form-group">
+                <label for="emotionalTone">Emotional Tone</label>
+                <input type="text" id="emotionalTone" placeholder="e.g., contemplative, intense, joyful">
+                <div class="help-text">What is the emotional atmosphere of this segment?</div>
+            </div>
+        </div>
+
+        <!-- Editable: Used Assets -->
+        <div class="section">
+            <h3>🎨 Used Assets</h3>
+            <p>Specify which assets (characters, locations, items) are featured in this segment.</p>
+            <textarea id="usedAssets" placeholder='["character_john", "location_patmos_shore"]'></textarea>
+            <div class="help-text">JSON array of asset IDs used in this segment</div>
+        </div>
+
+        <!-- Editable: Additional Properties -->
+        <div class="section">
+            <h3>⚙️ Additional Properties</h3>
+            <p>Optional properties that may have been added to the segment.</p>
+            
+            <div class="form-group">
+                <label for="videoPath">Video Path</label>
+                <input type="text" id="videoPath" placeholder="/path/to/generated/video.mp4">
+                <div class="help-text">Path to the generated video file (if available)</div>
+            </div>
+
+            <div class="form-group">
+                <label for="additionalProps">Additional JSON Properties</label>
+                <textarea id="additionalProps" placeholder='{"customProperty": "value"}'></textarea>
+                <div class="help-text">Any other properties in JSON format</div>
+            </div>
+        </div>
+        
+        <div class="button-group">
+            <button class="btn-primary" onclick="saveSegment()">💾 Save Segment</button>
+            <button class="btn-secondary" onclick="loadSegment()">🔄 Reload</button>
+            <button class="btn-secondary" onclick="resetToOriginal()">↩️ Reset to Original</button>
+        </div>
+        
+        <div id="status"></div>
+    </div>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+        let currentSegmentData = null;
+        let originalSegmentData = null;
+        let allSegments = [];
+        
+        // Load segment data when page loads
+        window.addEventListener('load', () => {
+            loadSegment();
+        });
+
+        // Handle segment selector change
+        document.getElementById('segmentSelector').addEventListener('change', (e) => {
+            const selectedIndex = parseInt(e.target.value);
+            if (!isNaN(selectedIndex)) {
+                vscode.postMessage({
+                    command: 'loadSegment',
+                    segmentIndex: selectedIndex
+                });
+            }
+        });
+        
+        function loadSegment() {
+            const selector = document.getElementById('segmentSelector');
+            const selectedIndex = selector.value ? parseInt(selector.value) : undefined;
+            
+            vscode.postMessage({
+                command: 'loadSegment',
+                segmentIndex: selectedIndex
+            });
+        }
+        
+        function saveSegment() {
+            try {
+                // Parse character focus as array
+                const characterFocusInput = document.getElementById('characterFocus').value.trim();
+                const characterFocus = characterFocusInput 
+                    ? characterFocusInput.split(',').map(c => c.trim()).filter(c => c)
+                    : [];
+
+                // Parse used assets
+                const usedAssetsInput = document.getElementById('usedAssets').value.trim();
+                let usedAssets = [];
+                if (usedAssetsInput) {
+                    try {
+                        usedAssets = JSON.parse(usedAssetsInput);
+                        if (!Array.isArray(usedAssets)) {
+                            throw new Error('usedAssets must be an array');
+                        }
+                    } catch (e) {
+                        showStatus(`Invalid usedAssets JSON: ${e.message}`, 'error');
+                        return;
+                    }
+                }
+
+                // Parse additional properties
+                const additionalPropsInput = document.getElementById('additionalProps').value.trim();
+                let additionalProps = {};
+                if (additionalPropsInput) {
+                    try {
+                        additionalProps = JSON.parse(additionalPropsInput);
+                    } catch (e) {
+                        showStatus(`Invalid additional properties JSON: ${e.message}`, 'error');
+                        return;
+                    }
+                }
+
+                // Build the updated segment
+                const updatedSegment = {
+                    ...currentSegmentData, // Keep all original fields
+                    prompt: document.getElementById('prompt').value.trim(),
+                    duration: parseFloat(document.getElementById('duration').value) || currentSegmentData.duration,
+                    startTime: parseFloat(document.getElementById('startTime').value) || currentSegmentData.startTime,
+                    continuityReference: document.getElementById('continuityReference').value || undefined,
+                    continuityType: document.getElementById('continuityType').value || undefined,
+                    narrativeContext: {
+                        sceneType: document.getElementById('sceneType').value || undefined,
+                        characterFocus: characterFocus,
+                        locationContinuity: document.getElementById('locationContinuity').value.trim() || undefined,
+                        emotionalTone: document.getElementById('emotionalTone').value.trim() || undefined
+                    },
+                    usedAssets: usedAssets,
+                    videoPath: document.getElementById('videoPath').value.trim() || currentSegmentData.videoPath,
+                    ...additionalProps
+                };
+                
+                vscode.postMessage({
+                    command: 'saveSegment',
+                    segment: updatedSegment
+                });
+            } catch (error) {
+                showStatus(`Error preparing segment data: ${error.message}`, 'error');
+            }
+        }
+
+        function resetToOriginal() {
+            if (originalSegmentData && confirm('Reset all editable fields to their original values?')) {
+                populateFields(originalSegmentData);
+                showStatus('Fields reset to original values', 'success');
+            }
+        }
+        
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+            
+            setTimeout(() => {
+                statusDiv.textContent = '';
+                statusDiv.className = '';
+            }, 5000);
+        }
+
+        function populateFields(segment) {
+            currentSegmentData = segment;
+            if (!originalSegmentData) {
+                originalSegmentData = JSON.parse(JSON.stringify(segment));
+            }
+
+            // Update badge
+            document.getElementById('segmentBadge').textContent = `Segment ${(segment.segmentIndex || 0) + 1}`;
+
+            // Populate read-only fields
+            document.getElementById('segmentId').textContent = segment.id || '-';
+            document.getElementById('status').textContent = segment.status || '-';
+            document.getElementById('storyId').textContent = segment.storyId || '-';
+            document.getElementById('segmentIndex').textContent = segment.segmentIndex !== undefined ? segment.segmentIndex : '-';
+            document.getElementById('createdAt').textContent = segment.createdAt 
+                ? new Date(segment.createdAt).toLocaleString() 
+                : '-';
+            document.getElementById('version').textContent = segment.version || '-';
+            document.getElementById('text').textContent = segment.text || '-';
+
+            // Populate editable fields
+            document.getElementById('prompt').value = segment.prompt || '';
+            document.getElementById('duration').value = segment.duration || 4;
+            document.getElementById('startTime').value = segment.startTime || 0;
+
+            // Continuity
+            document.getElementById('continuityReference').value = segment.continuityReference || '';
+            document.getElementById('continuityType').value = segment.continuityType || '';
+
+            // Narrative context
+            if (segment.narrativeContext) {
+                document.getElementById('sceneType').value = segment.narrativeContext.sceneType || '';
+                document.getElementById('characterFocus').value = 
+                    Array.isArray(segment.narrativeContext.characterFocus) 
+                        ? segment.narrativeContext.characterFocus.join(', ') 
+                        : '';
+                document.getElementById('locationContinuity').value = segment.narrativeContext.locationContinuity || '';
+                document.getElementById('emotionalTone').value = segment.narrativeContext.emotionalTone || '';
+            } else {
+                document.getElementById('sceneType').value = '';
+                document.getElementById('characterFocus').value = '';
+                document.getElementById('locationContinuity').value = '';
+                document.getElementById('emotionalTone').value = '';
+            }
+
+            // Used assets
+            document.getElementById('usedAssets').value = segment.usedAssets && segment.usedAssets.length > 0
+                ? JSON.stringify(segment.usedAssets, null, 2)
+                : '';
+
+            // Additional properties
+            document.getElementById('videoPath').value = segment.videoPath || '';
+
+            // Additional props (any fields not explicitly handled)
+            const knownFields = ['version', 'storyId', 'segmentIndex', 'createdAt', 'id', 'text', 'status', 
+                                  'prompt', 'duration', 'startTime', 'continuityReference', 'continuityType', 
+                                  'narrativeContext', 'usedAssets', 'videoPath'];
+            const additionalFields = {};
+            for (const key in segment) {
+                if (!knownFields.includes(key)) {
+                    additionalFields[key] = segment[key];
+                }
+            }
+            document.getElementById('additionalProps').value = Object.keys(additionalFields).length > 0
+                ? JSON.stringify(additionalFields, null, 2)
+                : '';
+        }
+
+        function populateSegmentSelector(segments, currentIndex) {
+            allSegments = segments;
+            const selector = document.getElementById('segmentSelector');
+            selector.innerHTML = segments.map((seg, idx) => {
+                const label = `Segment ${idx + 1} - ${seg.id || seg.text?.substring(0, 30) || 'Untitled'}`;
+                return `<option value="${idx}" ${idx === currentIndex ? 'selected' : ''}>${label}</option>`;
+            }).join('');
+        }
+
+        function populateContinuitySelector(segments, currentIndex) {
+            const selector = document.getElementById('continuityReference');
+            const currentOptions = Array.from(selector.options).map(opt => opt.value);
+            
+            // Add options for previous segments only
+            const newOptions = ['<option value="">None (standalone segment)</option>'];
+            for (let i = 0; i < currentIndex; i++) {
+                const seg = segments[i];
+                const segId = seg.id || `segment_${i + 1}`;
+                newOptions.push(`<option value="${segId}">Segment ${i + 1} - ${seg.text?.substring(0, 40) || segId}</option>`);
+            }
+            
+            selector.innerHTML = newOptions.join('');
+        }
+        
+        // Handle messages from extension
+        window.addEventListener('message', event => {
+            const message = event.data;
+            
+            switch (message.command) {
+                case 'loadSegment':
+                    if (message.segment) {
+                        populateFields(message.segment);
+                        
+                        // Populate selectors if we have all segments
+                        if (message.allSegments) {
+                            populateSegmentSelector(message.allSegments, message.segment.segmentIndex || 0);
+                            populateContinuitySelector(message.allSegments, message.segment.segmentIndex || 0);
+                        }
+                    } else {
+                        showStatus('No segment data available', 'error');
+                    }
+                    break;
+                    
+                case 'saveResult':
+                    if (message.success) {
+                        showStatus('Segment saved successfully!', 'success');
+                        // Update original data to reflect saved state
+                        originalSegmentData = JSON.parse(JSON.stringify(currentSegmentData));
+                    } else {
+                        showStatus('Failed to save segment: ' + (message.error || 'Unknown error'), 'error');
+                    }
+                    break;
+            }
+        });
+    </script>
+</body>
+</html>
+
