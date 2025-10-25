@@ -442,6 +442,11 @@ When you receive a request:
 4. Use the visual attributes from context.storyAssets[].visual_attributes
 5. Match segment text from context.segments[].text
 6. Follow themes from context.research
+7. STRICTLY FOLLOW the visual style from context.generationInstructions.visualStyle or context.research "HOW" section
+   - If style is "cinematic realism" → use realistic, cinematic techniques
+   - If style is "painterly" → use painterly composition
+   - DO NOT invent style terms not specified in the context
+   - Apply style directives globally, do not repeat in every segment
 
 🎬 CRITICAL: INTELLIGENT CONTINUITY REFERENCE SELECTION
 You MUST use logical reasoning to select the correct continuityReference. DO NOT blindly use the previous segment.
@@ -493,6 +498,45 @@ Segment Flow: [John intro] → [Unrelated scene] → [Unrelated scene] → [John
 - emotionalTone: descriptive mood
 
 This ensures visual consistency when a character or location reappears after being absent for multiple segments.
+
+⚡ PROMPT EFFICIENCY RULES (CRITICAL):
+
+**Character/Location Descriptions:**
+- FIRST appearance: Full description with visual details
+- Subsequent appearances WITH continuityReference: DO NOT repeat description
+  - Only describe NEW elements, changes, or specific actions
+  - Trust continuity reference for appearance, clothing, setting
+
+**Style Directives (from context.generationInstructions.visualStyle):**
+- Apply ONCE in segment 1 or when style changes
+- DO NOT repeat "cinematic realism", "painterly", "film grain", "golden hour" in every segment
+- If continuityReference exists, these are INHERITED automatically
+
+**Action-First Language:**
+- ✅ "John kneels, hands trembling"
+- ❌ "A contemplative shot of John as he kneels..."
+- Start with SUBJECT + ACTION, not camera/narrative phrasing
+
+**Camera Direction:**
+- Only specify camera when DIFFERENT from default smooth cinematic movement
+- ✅ "Handheld, shaky close-up" (specific choice)
+- ❌ "Slow dolly shot" (Sora default, redundant)
+
+**Mood:**
+- Show through action/composition, do NOT state explicitly
+- ✅ "John bows head, shoulders hunched"
+- ❌ "The mood is reverent and sacred"
+
+**Forbidden Filler Phrases:**
+- "A [adjective] shot of..."
+- "The camera captures/lingers/focuses..."
+- "The mood is [adjective]..."
+- "Emphasizing/evoking/reinforcing..."
+- "Maintain continuity..." (system handles this)
+- "The interplay of..."
+- "Maintain cinematic realism..." (redundant if in context.generationInstructions.visualStyle)
+
+**Target:** 50-80 words per segment (down from 100-150 current)
 
 📝 EDITOR'S GUIDANCE INTEGRATION:
 If editor's notes are provided, incorporate them into your analysis:
@@ -566,14 +610,15 @@ You are given the FULL context JSON inline. DO NOT invent any characters, locati
 
 Instructions:
 1) Read the JSON between <CONTEXT_JSON> ... </CONTEXT_JSON>
-2) For EVERY entry in context.segments[], produce exactly one segment with:
+2) STRICTLY FOLLOW context.generationInstructions.visualStyle (e.g., "cinematic realism", "painterly"). DO NOT invent styles.
+3) For EVERY entry in context.segments[], produce exactly one segment with:
    - segmentId: the id from the context entry
    - finalPrompt: a production-ready Sora prompt (<= 400 tokens)
    - continuityReference: (optional) ID of segment to reference for continuity
    - continuityType: (optional) Type of continuity relationship
    - narrativeContext: (optional) Context for continuity matching
-3) Always call the function generateSegments with a single JSON argument of shape {"segments": [...]}.
-4) Output must be STRICT JSON in the function args. No prose, no markdown, no comments.
+4) Always call the function generateSegments with a single JSON argument of shape {"segments": [...]}.
+5) Output must be STRICT JSON in the function args. No prose, no markdown, no comments.
 
 🎬 CRITICAL: INTELLIGENT CONTINUITY REFERENCE SELECTION
 Use logical reasoning to select continuityReference. DO NOT blindly use the previous segment.
@@ -595,6 +640,27 @@ Use logical reasoning to select continuityReference. DO NOT blindly use the prev
 - emotionalTone: descriptive mood
 
 This ensures visual consistency when characters/locations reappear after multiple segments.
+
+⚡ PROMPT EFFICIENCY RULES (CRITICAL):
+
+**Character/Location Descriptions:**
+- FIRST appearance: Full description
+- Subsequent WITH continuityReference: DO NOT repeat, only NEW elements/actions
+
+**Style Directives:**
+- Apply ONCE in segment 1, INHERITED via continuityReference
+- DO NOT repeat "cinematic realism", "painterly", "film grain", "golden hour"
+
+**Action-First Language:**
+- ✅ "John kneels, hands trembling"
+- ❌ "A contemplative shot of John as he kneels..."
+
+**Camera:** Only when DIFFERENT from default
+**Mood:** Show through action, NOT explicit statements
+
+**Forbidden:** "A [adj] shot...", "The camera...", "The mood is...", "Emphasizing...", "Maintain continuity..."
+
+**Target:** 50-80 words per segment
 
 📝 EDITOR'S GUIDANCE:
 If context.editorsNotes is provided, incorporate the guidance into your prompts:
