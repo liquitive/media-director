@@ -39,6 +39,8 @@ export class StoryTreeProvider implements vscode.TreeDataProvider<StoryTreeItem>
                 return this.getStoryChildren(element.story);
             case 'segments':
                 return this.getSegmentChildren(element.story);
+            case 'segment':
+                return this.getSegmentVideoChildren(element.story, element.segment, element.segmentIndex);
             case 'completed':
                 return this.getCompletedChildren(element.story);
             case 'source':
@@ -96,6 +98,19 @@ export class StoryTreeProvider implements vscode.TreeDataProvider<StoryTreeItem>
         }
         
         console.log('🔍 StoryTreeProvider: Found', children.length, 'segments for story:', story.name);
+        
+        return Promise.resolve(children);
+    }
+
+    private getSegmentVideoChildren(story: Story, segment: any, segmentIndex?: number): Thenable<StoryTreeItem[]> {
+        const children: StoryTreeItem[] = [];
+        
+        // If segment has a videoPath, add it as a child
+        if (segment?.videoPath && fs.existsSync(segment.videoPath)) {
+            children.push(new StoryTreeItem(story, 'video', this.storyService, segment, segmentIndex, segment.videoPath));
+        }
+        
+        console.log('🔍 StoryTreeProvider: Segment', segmentIndex, 'has', children.length, 'video(s)');
         
         return Promise.resolve(children);
     }
@@ -204,7 +219,7 @@ export class StoryTreeItem extends vscode.TreeItem {
         asset?: any
     ) {
         const label = StoryTreeItem.getLabel(story, type, segment, segmentIndex, filePath, asset);
-        const collapsibleState = StoryTreeItem.getCollapsibleState(type);
+        const collapsibleState = StoryTreeItem.getCollapsibleState(type, segment);
         
         super(label, collapsibleState);
         
@@ -224,7 +239,8 @@ export class StoryTreeItem extends vscode.TreeItem {
         console.log('🔍 StoryTreeItem: Created item:', {
             label,
             type,
-            collapsible: collapsibleState
+            collapsible: collapsibleState,
+            hasVideo: segment?.videoPath ? 'yes' : 'no'
         });
     }
 
@@ -260,7 +276,7 @@ export class StoryTreeItem extends vscode.TreeItem {
         }
     }
 
-    private static getCollapsibleState(type: TreeItemType): vscode.TreeItemCollapsibleState {
+    private static getCollapsibleState(type: TreeItemType, segment?: any): vscode.TreeItemCollapsibleState {
         switch (type) {
             case 'story':
             case 'segments':
@@ -268,6 +284,9 @@ export class StoryTreeItem extends vscode.TreeItem {
             case 'source':
             case 'assets':
                 return vscode.TreeItemCollapsibleState.Collapsed;
+            case 'segment':
+                // Segments are collapsible if they have a video
+                return segment?.videoPath ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
             default:
                 return vscode.TreeItemCollapsibleState.None;
         }
