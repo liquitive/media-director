@@ -1653,8 +1653,8 @@ ${contextJson}
       const run = await this.openai.beta.threads.runs.retrieve(runId, { thread_id: threadId });
       pollCount++;
       
-      // Log status changes or every 10 polls (5 seconds)
-      if (run.status !== lastLoggedStatus || pollCount % 10 === 0) {
+      // Log status changes or every 5 polls (10 seconds)
+      if (run.status !== lastLoggedStatus || pollCount % 5 === 0) {
         const elapsed = Math.round((Date.now() - started) / 1000);
         this.errorLogger.logInfo('system', `    Poll ${pollCount}: Run ${runId} status: ${run.status} (${elapsed}s elapsed, waiting for: ${targets.join('|')})`);
         lastLoggedStatus = run.status;
@@ -1698,7 +1698,7 @@ ${contextJson}
         throw new Error(`Run ${runId} timeout after ${elapsed}ms (last=${run.status})`);
       }
       
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 2000)); // Poll every 2 seconds
     }
   }
   
