@@ -464,12 +464,12 @@ export class StoryTreeItem extends vscode.TreeItem {
                 break;
             
             case 'video':
-                // Clicking video opens with video player
-                if (this.filePath) {
+                // Double-clicking video opens in video viewer with navigation
+                if (this.filePath && this.story?.id && this.segmentIndex !== undefined) {
                     return {
-                        command: 'vscode.openWith',
-                        title: 'Open with Video Player',
-                        arguments: [vscode.Uri.file(this.filePath), 'sora.videoPlayer']
+                        command: 'sora.openVideoViewer',
+                        title: 'Open Video Viewer',
+                        arguments: [this.story.id, this.segmentIndex, this.filePath]
                     };
                 }
                 break;

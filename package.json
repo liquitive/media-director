@@ -213,6 +213,11 @@
         "category": "Sora"
       },
       {
+        "command": "sora.openVideoViewer",
+        "title": "Open Video Viewer",
+        "category": "Sora"
+      },
+      {
         "command": "sora.showProgress",
         "title": "Show Progress",
         "category": "Sora"
@@ -494,9 +499,14 @@
           "group": "navigation@1"
         },
         {
-          "command": "sora.playVideo",
+          "command": "sora.openVideoViewer",
           "when": "view == soraStories && viewItem == video",
           "group": "navigation@1"
+        },
+        {
+          "command": "sora.playVideo",
+          "when": "view == soraStories && viewItem == video",
+          "group": "navigation@2"
         },
         {
           "command": "sora.openSourceFolder",

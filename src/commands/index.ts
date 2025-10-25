@@ -20,6 +20,7 @@ import { Segment } from '../models/story';
 import * as path from 'path';
 import * as fs from 'fs';
 import { createStoryWizard } from './createStoryWizard';
+import { VideoViewerCommand } from './videoViewerCommand';
 import { WebResourceService } from '../services/webResourceService';
 import { ProgressManager } from '../services/progressManager';
 import { PythonDependencyService } from '../services/pythonDependencyService';
@@ -151,6 +152,11 @@ export function registerCommands(context: vscode.ExtensionContext, services: Ser
         vscode.commands.registerCommand('sora.viewMedia', async (storyId: string) => {
             await viewMedia(storyId, storyService);
         })
+    );
+
+    // Video Viewer with Navigation
+    context.subscriptions.push(
+        ...VideoViewerCommand.register(context, storyService)
     );
 
     // Show progress
