@@ -985,6 +985,9 @@ OUTPUT REQUIREMENT:
         });
 
         // g. Create run with batch-specific instructions
+        const batchCount = batchSegments.length;
+        const batchSegmentIds = batchSegments.map((s: any) => s.id).join(', ');
+        
         let instructions: string;
         if (batchIndex === 0) {
           // First batch: Extract WHERE info from research for explicit scene establishment
@@ -992,11 +995,14 @@ OUTPUT REQUIREMENT:
           const whereMatch = research.match(/2\.\s*WHERE\s*\n([\s\S]*?)(?=\n3\.|$)/i);
           const whereInfo = whereMatch ? whereMatch[1].trim().substring(0, 500) : '';
           
-          instructions = `FIRST BATCH - ESTABLISH THE WORLD:
+          instructions = `CRITICAL: Generate structured fields for ALL ${batchCount} segments (${batchSegmentIds}) in ONE function call.
+Call generateSegments with an array of ${batchCount} segment objects.
 
-Your first segment (segment 1) is THE ESTABLISHING SHOT. It must visually ground the viewer in the story's location and atmosphere.
+FIRST BATCH - ESTABLISH THE WORLD:
 
-Key requirements for segment 1:
+Your first segment (segment_1) is THE ESTABLISHING SHOT. It must visually ground the viewer in the story's location and atmosphere.
+
+Key requirements for segment_1:
 - MUST include explicit location details (island, coastline, cliffs, architecture, landscape features)
 - MUST establish the time period through visual elements
 - MUST set the atmospheric tone (desolate, peaceful, foreboding, etc.)
@@ -1004,12 +1010,17 @@ Key requirements for segment 1:
 
 ${whereInfo ? `Location context:\n${whereInfo}\n` : ''}
 
-For all segments in this batch:
+For ALL ${batchCount} segments:
 - Build the visual foundation and tone
 - Introduce key environmental elements
-- No trait repetition - describe characters and locations fresh each time`;
+- No trait repetition - describe characters and locations fresh each time
+
+CRITICAL: Output ALL ${batchCount} segments in your generateSegments call. Do not stop after 1 or 2.`;
         } else {
-          instructions = 'Maintain consistency with prior batch. No trait repetition.';
+          instructions = `CRITICAL: Generate structured fields for ALL ${batchCount} segments (${batchSegmentIds}) in ONE function call.
+Call generateSegments with an array of ${batchCount} segment objects.
+
+Maintain consistency with prior batch. No trait repetition.`;
         }
         
         // g. Retry loop for stuck/expired runs - EACH RETRY GETS A NEW THREAD
