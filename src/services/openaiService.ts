@@ -532,8 +532,12 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
                     };
                 } else if (video.status === 'failed') {
                     const errorDetail = JSON.stringify((video as any).error || video, null, 2);
-                    logger.error(`Video generation failed. Full video object: ${JSON.stringify(video, null, 2)}`);
-                    throw new Error(`Video generation failed: ${errorDetail}`);
+                    logger.error(`❌ Video generation failed by Sora API. Full video object: ${JSON.stringify(video, null, 2)}`);
+                    
+                    const errorCode = (video as any).error?.code || 'unknown';
+                    const errorMessage = (video as any).error?.message || 'No error message provided';
+                    
+                    throw new Error(`Sora API video generation failed (${errorCode}): ${errorMessage}. This is an internal Sora error and may succeed on retry. Video ID: ${video.id}`);
                 }
                 
                 // Check if video has output_url even if status isn't "completed"
@@ -548,8 +552,17 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
                 
                 // Wait before next poll
                 await this.sleep(10000); // 10 seconds
-            } catch (error) {
+            } catch (error: any) {
                 logger.error(`Error polling video status (attempt ${attempt + 1}):`, error);
+                
+                // If video generation failed (not a network error), throw immediately - don't retry
+                const errorMessage = error?.message?.toLowerCase() || '';
+                if (errorMessage.includes('video generation failed') || errorMessage.includes('video_generation_failed')) {
+                    logger.error('❌ Video generation failed permanently - not retrying');
+                    throw error;
+                }
+                
+                // For other errors (network, etc), retry unless last attempt
                 if (attempt === maxAttempts - 1) {
                     throw error;
                 }
