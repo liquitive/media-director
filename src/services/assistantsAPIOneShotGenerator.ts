@@ -1049,48 +1049,62 @@ For all segments in this batch:
             this.errorLogger.logInfo(storyId, `  ⏳ Waiting for AI response...`);
             let raRun = await this.waitUntilRunState(currentThreadId, run.id, ['requires_action'], 180000, false); // 3 min for response, don't cancel
             
-            // i. Extract tool call args and KEEP POLLING until we have all segments
+            // i. RESPONSE LOOP: Keep responding to tool calls until we have all segments
             const expectedCount = batchSegments.length;
             let accumulatedSegments: any[] = [];
-            let pollAttempts = 0;
-            const MAX_POLL_ATTEMPTS = 20; // Poll up to 20 times (20 * 3s = 1 min max)
+            let responseRound = 0;
+            const MAX_RESPONSE_ROUNDS = 15; // Allow up to 15 rounds of tool responses
             
-            while (accumulatedSegments.length < expectedCount && pollAttempts < MAX_POLL_ATTEMPTS) {
-              // Parse all available segments so far
-              const currentSegments = await this.parseSegmentResponse(raRun, currentThreadId, storyId);
+            while (accumulatedSegments.length < expectedCount && responseRound < MAX_RESPONSE_ROUNDS) {
+              responseRound++;
+              this.errorLogger.logInfo(storyId, `  🔄 Response round ${responseRound}: Processing tool calls...`);
               
-              if (currentSegments.length > accumulatedSegments.length) {
-                // We got new segments!
-                accumulatedSegments = currentSegments;
-                this.errorLogger.logInfo(storyId, `  ✓ Received ${accumulatedSegments.length}/${expectedCount} segments so far...`);
-                
-                if (accumulatedSegments.length >= expectedCount) {
-                  break; // We have everything!
-                }
+              // Parse all segments from current tool calls
+              const newSegments = await this.parseSegmentResponse(raRun, currentThreadId, storyId);
+              accumulatedSegments = newSegments; // Replace with latest (contains all segments so far)
+              this.errorLogger.logInfo(storyId, `  ✓ Round ${responseRound}: Received ${accumulatedSegments.length}/${expectedCount} segments`);
+              
+              if (accumulatedSegments.length >= expectedCount) {
+                this.errorLogger.logInfo(storyId, `  ✅ Got all ${expectedCount} segments! Submitting final tool outputs...`);
+                break; // We have everything!
               }
               
-              // Check if run is still working or completed
-              const currentRun = await this.openai.beta.threads.runs.retrieve(run.id, { thread_id: currentThreadId });
+              // CRITICAL: Submit tool outputs to let the assistant continue
+              const toolCalls = raRun.required_action?.submit_tool_outputs?.tool_calls ?? [];
+              this.errorLogger.logInfo(storyId, `  📤 Responding to ${toolCalls.length} tool calls (assistant will continue generating)...`);
               
-              if (currentRun.status === 'requires_action') {
-                // Still generating, wait a bit and poll again
-                this.errorLogger.logInfo(storyId, `  ⏳ Waiting for more segments (${accumulatedSegments.length}/${expectedCount})...`);
-                await new Promise(r => setTimeout(r, 3000)); // 3 second poll interval
-                pollAttempts++;
-                raRun = currentRun; // Update for next iteration
-              } else if (currentRun.status === 'completed' || currentRun.status === 'failed' || currentRun.status === 'cancelled') {
-                // Run finished without giving us all segments
-                this.errorLogger.logWarning('system', `Run finished with status ${currentRun.status} after ${accumulatedSegments.length}/${expectedCount} segments`);
-                break;
-              } else {
-                // Some other status, keep waiting
-                await new Promise(r => setTimeout(r, 3000));
-                pollAttempts++;
+              await this.openai.beta.threads.runs.submitToolOutputs(
+                run.id,
+                {
+                  thread_id: currentThreadId,
+                  tool_outputs: toolCalls.map((tc: any) => ({
+                    tool_call_id: tc.id,
+                    output: 'ok'
+                  }))
+                }
+              );
+              
+              // Wait for NEXT requires_action (assistant will generate more segments)
+              this.errorLogger.logInfo(storyId, `  ⏳ Waiting for assistant to generate more segments...`);
+              try {
+                raRun = await this.waitUntilRunState(currentThreadId, run.id, ['requires_action'], 60000, false); // 60s timeout
+                this.errorLogger.logInfo(storyId, `  ✓ Assistant ready with more segments!`);
+              } catch (waitError) {
+                // If we timeout or get completed/failed, check what we have
+                this.errorLogger.logWarning('system', `Wait for next requires_action failed: ${waitError}. Checking final status...`);
+                const finalRun = await this.openai.beta.threads.runs.retrieve(run.id, { thread_id: currentThreadId });
+                
+                if (finalRun.status === 'completed') {
+                  this.errorLogger.logInfo(storyId, `  ℹ️ Run completed after ${accumulatedSegments.length} segments`);
+                  break;
+                } else {
+                  throw waitError; // Re-throw if it's an actual error
+                }
               }
             }
             
             structuredFields = accumulatedSegments;
-            this.errorLogger.logInfo(storyId, `  ✓ Final: Received ${structuredFields.length}/${expectedCount} structured field sets`);
+            this.errorLogger.logInfo(storyId, `  ✅ Final: Collected ${structuredFields.length}/${expectedCount} segments after ${responseRound} response rounds`);
             
             // CRITICAL: Check if we got all segments
             if (structuredFields.length < expectedCount) {
@@ -1101,29 +1115,32 @@ For all segments in this batch:
               } catch (cancelError) {
                 this.errorLogger.logWarning('system', `Failed to cancel incomplete run: ${cancelError}`);
               }
-              throw new Error(`Incomplete response: got ${structuredFields.length}/${expectedCount} segments after ${pollAttempts} polling attempts. Assistant likely hit token limit or stopped early.`);
+              throw new Error(`Incomplete response: got ${structuredFields.length}/${expectedCount} segments after ${responseRound} response rounds. Assistant likely hit token limit or stopped early.`);
             }
             
             this.errorLogger.logInfo(storyId, `  ✅ Complete batch: ${structuredFields.length}/${expectedCount} segments`);
             this.errorLogger.logInfo(storyId, `  DEBUG: First segment structure: ${JSON.stringify(structuredFields[0], null, 2).substring(0, 500)}`);
             
-            // j. Submit tool outputs and wait for completed (AGGRESSIVE 30s timeout)
-            this.errorLogger.logInfo(storyId, `  ✓ Submitting tool outputs to complete run ${run.id}...`);
-            const toolCalls = raRun.required_action?.submit_tool_outputs?.tool_calls ?? [];
-            this.errorLogger.logInfo(storyId, `  DEBUG: Found ${toolCalls.length} tool calls to submit outputs for`);
-            await this.openai.beta.threads.runs.submitToolOutputs(
-              run.id,
-              {
-                thread_id: currentThreadId,
-                tool_outputs: toolCalls.map((tc: any) => ({
-                  tool_call_id: tc.id,
-                  output: 'ok'
-                }))
-              }
-            );
+            // j. Submit FINAL tool outputs and wait for run completion
+            this.errorLogger.logInfo(storyId, `  📤 Submitting final tool outputs to complete run ${run.id}...`);
+            const finalToolCalls = raRun.required_action?.submit_tool_outputs?.tool_calls ?? [];
+            this.errorLogger.logInfo(storyId, `  DEBUG: Found ${finalToolCalls.length} final tool calls`);
+            
+            if (finalToolCalls.length > 0) {
+              await this.openai.beta.threads.runs.submitToolOutputs(
+                run.id,
+                {
+                  thread_id: currentThreadId,
+                  tool_outputs: finalToolCalls.map((tc: any) => ({
+                    tool_call_id: tc.id,
+                    output: 'ok'
+                  }))
+                }
+              );
+            }
             
             // k. Wait for run to complete with AGGRESSIVE 30-second timeout
-            this.errorLogger.logInfo(storyId, `  ⏳ Waiting for run completion (30s timeout)...`);
+            this.errorLogger.logInfo(storyId, `  ⏳ Waiting for final run completion (30s timeout)...`);
             await this.waitUntilRunState(currentThreadId, run.id, ['completed'], AssistantsAPIOneShotGenerator.POST_SUBMIT_TIMEOUT_MS, true); // 30s, cancel on timeout
             
             this.errorLogger.logInfo(storyId, `  ✅ Run completed successfully, thread is free`);
