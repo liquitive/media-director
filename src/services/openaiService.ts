@@ -71,7 +71,7 @@ export class OpenAIService {
         progressCallback?: (progress: number, message: string) => void
     ): Promise<{ id: string; url?: string }> {
         try {
-            logger.info(`Original prompt length: ${prompt.length} chars`);
+            logger.info(`Prompt length: ${prompt.length} chars`);
             logger.info(`Generating video segment with prompt: ${prompt.substring(0, 100)}...`);
             
             if (!this.client) {
@@ -84,15 +84,13 @@ export class OpenAIService {
             logger.info(`Client has videos: ${(this.client as any).videos !== undefined}`);
             logger.info(`Videos type: ${typeof (this.client as any).videos}`);
             
-            // Shorten prompt to fit Sora's limits (max ~500 chars)
-            let shortenedPrompt = this.shortenPromptForSora(prompt);
-            logger.info(`Shortened prompt length: ${shortenedPrompt.length} chars`);
+            // Use prompt directly - already optimized by AssistantsAPIOneShotGenerator
+            let enhancedPrompt = prompt;
             
             // Apply story style to prompt if provided
-            let enhancedPrompt = shortenedPrompt;
             if (storyConfig?.visualStyle) {
                 const stylePrompt = this.buildStylePrompt(storyConfig.visualStyle, storyConfig.customStylePrompt);
-                enhancedPrompt = `${shortenedPrompt}, ${stylePrompt}`;
+                enhancedPrompt = `${prompt}, ${stylePrompt}`;
             }
 
             // Add continuity instructions if this is a continuation of a previous segment
@@ -275,110 +273,7 @@ export class OpenAIService {
         }
     }
 
-    /**
-     * Optimize a verbose prompt for Sora following best practices.
-     * Uses AI to rewrite prompt while preserving [[tags]].
-     */
-    async optimizeSoraPrompt(
-        rawPrompt: string, 
-        maxChars: number, 
-        context?: { tagDefinitions?: string; style?: string }
-    ): Promise<string> {
-        logger.info(`Optimizing Sora prompt using OpenAI GPT-4 (fallback)`);
-        
-        const systemPrompt = `You rewrite scene prompts for OpenAI Sora video generation.
 
-RULES (STRICT):
-- REPLACE all [[tags]] with their EXACT VISUAL descriptions from the TAGS section. NO tags should remain in output.
-- Output MUST be <= ${maxChars} characters total. No newlines, no quotes, no parentheses, ASCII only.
-- Write 1-2 short sentences. Active voice, present tense.
-- Include: WHO (from tag descriptions), WHERE (from tag descriptions), WHAT (action), CAMERA, LIGHTING, MOOD.
-- The TAGS section at the top defines what each [[tag]] represents. Replace each [[tag]] with its definition.
-- Example: If TAGS says "[[narrator]] = weathered man with gray hair, contemplative expression" then replace [[narrator]] with "weathered man with gray hair, contemplative expression".
-- PRESERVE ALL VISUAL CHARACTER DETAILS from the TAGS section (age, appearance, clothing, features). These are critical for consistency.
-- DO NOT ADD attributes not present in the tags (like "deep voice", "gentle manner", etc). Only use VISUAL details.
-- Do not include technical settings (duration, resolution, fps, aspect ratio).
-- Use dense cinematic vocabulary: "35mm lens", "tracking shot", "golden hour", "shallow DoF", "rim lighting", "chiaroscuro".
-- Keep descriptions compact but complete enough for Sora to understand all entities and actions.
-- Prioritize protagonist action and setting above all else.
-
-CRITICAL: Output must be a complete, standalone prompt with NO [[tags]]. All entities fully described using ONLY the visual details from TAGS section.
-
-OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, no explanations.`;
-
-        const userPrompt = `INPUT PROMPT:\n${rawPrompt}\n\nOPTIMIZED PROMPT (max ${maxChars} chars):`;
-
-        try {
-            const response = await this.client.chat.completions.create({
-                model: 'gpt-4',
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt }
-                ],
-                temperature: 0.7,
-                max_tokens: 300
-            });
-
-            let optimized = response.choices[0]?.message?.content?.trim() || '';
-            
-            // Clean up the output
-            optimized = optimized
-                .replace(/^["']|["']$/g, '')  // Remove surrounding quotes
-                .replace(/\n/g, ' ')           // Remove newlines
-                .replace(/\s+/g, ' ')          // Collapse multiple spaces
-                .trim();
-            
-            // Validate tag integrity
-            const tagPattern = /\[\[[^\]]+\]\]/g;
-            const inputTags = (rawPrompt.match(tagPattern) || []);
-            
-            for (const tag of inputTags) {
-                if (!optimized.includes(tag)) {
-                    logger.warn(`Tag ${tag} missing from optimized prompt`);
-                }
-            }
-            
-            // Check length
-            if (optimized.length > maxChars) {
-                logger.warn(`Optimized prompt ${optimized.length} chars exceeds limit ${maxChars}, truncating safely`);
-                optimized = this.shortenPromptForSora(optimized, maxChars);
-            }
-            
-            logger.info(`Prompt optimization: ${rawPrompt.length} → ${optimized.length} chars`);
-            logger.info(`Optimized prompt: ${optimized}`);
-            
-            return optimized;
-        } catch (error) {
-            logger.error('OpenAI prompt optimization failed:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Shorten prompt to fit Sora's character limit (~500 chars max)
-     * Removes detailed asset descriptions in parentheses while keeping core visual info
-     */
-    private shortenPromptForSora(prompt: string, maxLength: number = 480): string {
-        // First, remove detailed asset descriptions in parentheses
-        // Example: "The Narrator (A soul in exile, experiencing...)" -> "The Narrator"
-        let shortened = prompt.replace(/\([^)]{30,}\)/g, '');
-        
-        // If still too long, truncate intelligently
-        if (shortened.length > maxLength) {
-            // Try to end at a sentence or comma
-            const cutoff = shortened.substring(0, maxLength);
-            const lastPeriod = cutoff.lastIndexOf('.');
-            const lastComma = cutoff.lastIndexOf(',');
-            
-            const cutPoint = lastPeriod > maxLength * 0.7 ? lastPeriod + 1 :
-                           lastComma > maxLength * 0.7 ? lastComma :
-                           maxLength;
-            
-            shortened = shortened.substring(0, cutPoint).trim();
-        }
-        
-        return shortened;
-    }
 
     /**
      * Build style prompt based on visual style configuration

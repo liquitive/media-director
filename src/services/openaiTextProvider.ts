@@ -47,9 +47,5 @@ export class OpenAITextProvider implements ITextAIProvider {
     async selectBestVisualStyle(transcription: string): Promise<string> {
         return this.openaiService.selectBestVisualStyle(transcription);
     }
-
-    async optimizeSoraPrompt(rawPrompt: string, maxChars: number, context?: { tagDefinitions?: string; style?: string }): Promise<string> {
-        return this.openaiService.optimizeSoraPrompt(rawPrompt, maxChars, context);
-    }
 }
 

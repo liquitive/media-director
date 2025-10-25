@@ -16,7 +16,6 @@ export interface ITextAIProvider {
     getRawText(prompt: string): Promise<string>;
     extractAssets(content: string, audioAnalysis?: any, progressManager?: any, parentTaskId?: string): Promise<any[]>;
     selectBestVisualStyle(transcription: string): Promise<string>;
-    optimizeSoraPrompt(rawPrompt: string, maxChars: number, context?: { tagDefinitions?: string; style?: string }): Promise<string>;
 }
 
 export class AIService {
@@ -55,10 +54,6 @@ export class AIService {
     
     async extractAssets(content: string, audioAnalysis?: any, progressManager?: any, parentTaskId?: string): Promise<any[]> {
         return this.textProvider.extractAssets(content, audioAnalysis, progressManager, parentTaskId);
-    }
-
-    async optimizeSoraPrompt(rawPrompt: string, maxChars: number, context?: { tagDefinitions?: string; style?: string }): Promise<string> {
-        return this.textProvider.optimizeSoraPrompt(rawPrompt, maxChars, context);
     }
     
     // Media tasks - always use OpenAI
