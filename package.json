@@ -499,14 +499,9 @@
           "group": "navigation@1"
         },
         {
-          "command": "sora.openVideoViewer",
-          "when": "view == soraStories && viewItem == video",
-          "group": "navigation@1"
-        },
-        {
           "command": "sora.playVideo",
           "when": "view == soraStories && viewItem == video",
-          "group": "navigation@2"
+          "group": "navigation@1"
         },
         {
           "command": "sora.openSourceFolder",

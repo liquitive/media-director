@@ -317,8 +317,17 @@ export function registerCommands(context: vscode.ExtensionContext, services: Ser
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('sora.playVideo', async (filePath: string) => {
-            await playVideo(filePath);
+        vscode.commands.registerCommand('sora.playVideo', async (item: any) => {
+            // If called from tree view, item will be a StoryTreeItem with video context
+            if (item?.story?.id && item?.segmentIndex !== undefined && item?.filePath) {
+                // Use new video viewer with navigation
+                await vscode.commands.executeCommand('sora.openVideoViewer', item.story.id, item.segmentIndex, item.filePath);
+            } else if (typeof item === 'string') {
+                // Legacy: if called with just a file path, open externally
+                await playVideo(item);
+            } else {
+                Notifications.error('Cannot play video: invalid video item');
+            }
         })
     );
 

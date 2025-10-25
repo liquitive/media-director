@@ -362,7 +362,8 @@ export class VideoViewerCommand {
                     const data = message.data;
                     videoPlayer.src = data.videoSrc;
                     videoPlayer.load();
-                    videoPlayer.play();
+                    // Auto-play the video
+                    videoPlayer.play().catch(err => console.warn('Auto-play prevented:', err));
                     
                     // Update buttons
                     prevButton.disabled = !data.hasPrevious;
@@ -371,6 +372,14 @@ export class VideoViewerCommand {
                     nextButton.classList.toggle('hidden', !data.hasNext);
                     break;
             }
+        });
+
+        // Auto-play video on initial load
+        videoPlayer.addEventListener('loadedmetadata', () => {
+            videoPlayer.play().catch(err => {
+                console.warn('Auto-play prevented:', err);
+                // Webviews in VS Code typically allow autoplay, but catch just in case
+            });
         });
 
         // Notify extension that webview is ready
