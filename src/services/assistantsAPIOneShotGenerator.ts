@@ -1000,17 +1000,33 @@ For all segments in this batch:
           instructions = 'Maintain consistency with prior batch. No trait repetition.';
         }
         
-        // g. Retry loop for stuck/expired runs - use different assistant on each retry
+        // g. Retry loop for stuck/expired runs - EACH RETRY GETS A NEW THREAD
         let structuredFields: any[] = [];
         let retryCount = 0;
         const MAX_RETRIES = this.assistantPool.length; // Try each assistant once
+        let currentThreadId = threadId; // Start with the original thread
         
         while (retryCount < MAX_RETRIES) {
           try {
-            const currentAssistant = this.getNextAssistant();
-            this.errorLogger.logInfo(storyId, `  🤖 Attempt ${retryCount + 1}/${MAX_RETRIES}: Using assistant ${currentAssistant}`);
+            // If this is a retry (not the first attempt), create a fresh thread
+            if (retryCount > 0) {
+              this.errorLogger.logInfo(storyId, `  🔄 Creating fresh thread for retry ${retryCount + 1}...`);
+              currentThreadId = await this.createStoryThread(storyId);
+              
+              // Re-post the batch context to the new thread
+              await this.openai.beta.threads.messages.create(currentThreadId, {
+                role: 'user',
+                content: [
+                  { type: 'text', text: batchMemo },
+                  { type: 'text', text: `<BATCH_CONTEXT>\n${JSON.stringify(batchContext, null, 2)}\n</BATCH_CONTEXT>` }
+                ]
+              });
+            }
             
-            const run = await this.openai.beta.threads.runs.create(threadId, {
+            const currentAssistant = this.getNextAssistant();
+            this.errorLogger.logInfo(storyId, `  🤖 Attempt ${retryCount + 1}/${MAX_RETRIES}: Using assistant ${currentAssistant} on thread ${currentThreadId}`);
+            
+            const run = await this.openai.beta.threads.runs.create(currentThreadId, {
               assistant_id: currentAssistant,
               tool_choice: { type: 'function', function: { name: 'generateSegments' } },
               max_completion_tokens: 32768,
@@ -1019,15 +1035,22 @@ For all segments in this batch:
 
             // h. Wait specifically for requires_action (longer timeout for initial response)
             this.errorLogger.logInfo(storyId, `  ⏳ Waiting for AI response...`);
-            const raRun = await this.waitUntilRunState(threadId, run.id, ['requires_action'], 180000, false); // 3 min for response, don't cancel
+            const raRun = await this.waitUntilRunState(currentThreadId, run.id, ['requires_action'], 180000, false); // 3 min for response, don't cancel
             
             // i. Extract tool call args (while run is in requires_action)
-            structuredFields = await this.parseSegmentResponse(raRun, threadId, storyId);
+            structuredFields = await this.parseSegmentResponse(raRun, currentThreadId, storyId);
             this.errorLogger.logInfo(storyId, `  ✓ Received ${structuredFields.length} structured field sets`);
             
             // CRITICAL: Check if we got all segments
             const expectedCount = batchSegments.length;
             if (structuredFields.length < expectedCount) {
+              // Cancel the incomplete run before throwing error
+              try {
+                await this.openai.beta.threads.runs.cancel(run.id, { thread_id: currentThreadId });
+                this.errorLogger.logInfo(storyId, `  ✓ Cancelled incomplete run ${run.id}`);
+              } catch (cancelError) {
+                this.errorLogger.logWarning('system', `Failed to cancel incomplete run: ${cancelError}`);
+              }
               throw new Error(`Incomplete response: got ${structuredFields.length}/${expectedCount} segments. Assistant likely hit token limit or stopped early.`);
             }
             
@@ -1041,7 +1064,7 @@ For all segments in this batch:
             await this.openai.beta.threads.runs.submitToolOutputs(
               run.id,
               {
-                thread_id: threadId,
+                thread_id: currentThreadId,
                 tool_outputs: toolCalls.map((tc: any) => ({
                   tool_call_id: tc.id,
                   output: 'ok'
@@ -1051,7 +1074,7 @@ For all segments in this batch:
             
             // k. Wait for run to complete with AGGRESSIVE 30-second timeout
             this.errorLogger.logInfo(storyId, `  ⏳ Waiting for run completion (30s timeout)...`);
-            await this.waitUntilRunState(threadId, run.id, ['completed'], AssistantsAPIOneShotGenerator.POST_SUBMIT_TIMEOUT_MS, true); // 30s, cancel on timeout
+            await this.waitUntilRunState(currentThreadId, run.id, ['completed'], AssistantsAPIOneShotGenerator.POST_SUBMIT_TIMEOUT_MS, true); // 30s, cancel on timeout
             
             this.errorLogger.logInfo(storyId, `  ✅ Run completed successfully, thread is free`);
             break; // Success - exit retry loop
@@ -1059,6 +1082,8 @@ For all segments in this batch:
           } catch (error) {
             retryCount++;
             this.errorLogger.logWarning('system', `Batch ${batchIndex + 1} attempt ${retryCount} failed: ${error instanceof Error ? error.message : String(error)}`);
+            
+            // No need to clean up - we'll create a fresh thread on next retry
             
             if (retryCount >= MAX_RETRIES) {
               throw new Error(`Batch ${batchIndex + 1} failed after ${MAX_RETRIES} attempts with different assistants: ${error instanceof Error ? error.message : String(error)}`);
