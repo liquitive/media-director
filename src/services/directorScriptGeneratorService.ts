@@ -750,7 +750,11 @@ export class DirectorScriptGeneratorService {
                     duration: pair.contextSegment.duration,
                     startTime: pair.contextSegment.startTime,
                     status: 'pending',
-                    usedAssets: pair.contextSegment.usedAssets || []
+                    usedAssets: pair.contextSegment.usedAssets || [],
+                    // Preserve continuity metadata from AI generation
+                    continuityReference: pair.aiSegment.continuityReference,
+                    continuityType: pair.aiSegment.continuityType || 'none',
+                    narrativeContext: pair.contextSegment.narrativeContext
                 };
                 
                 const segmentFileData = {

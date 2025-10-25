@@ -355,6 +355,64 @@ OUTPUT REQUIREMENT:
   }
   
   /**
+   * Track active threads for cleanup
+   */
+  private activeThreads: Map<string, string> = new Map(); // threadId -> storyId
+  
+  /**
+   * Cancel all runs in a specific thread
+   */
+  private async cancelThreadRuns(threadId: string): Promise<number> {
+    let cancelledCount = 0;
+    try {
+      const runs = await this.openai.beta.threads.runs.list(threadId);
+      for (const run of runs.data) {
+        if (run.status === 'in_progress' || run.status === 'requires_action' || run.status === 'queued') {
+          try {
+            await this.openai.beta.threads.runs.cancel(run.id, { thread_id: threadId });
+            cancelledCount++;
+            this.errorLogger.logInfo('system', `  ✓ Cancelled stuck run ${run.id} (status: ${run.status})`);
+          } catch (cancelError) {
+            this.errorLogger.logInfo('system', `  ⚠️ Failed to cancel run ${run.id}: ${cancelError}`);
+          }
+        }
+      }
+    } catch (error) {
+      this.errorLogger.logInfo('system', `  ⚠️ Failed to list runs for thread ${threadId}: ${error}`);
+    }
+    return cancelledCount;
+  }
+  
+  /**
+   * Clean up any stuck runs from previous generation attempts
+   * Cancels all active runs for all tracked threads
+   */
+  private async cleanupAllStuckRuns(): Promise<void> {
+    if (this.activeThreads.size === 0) {
+      this.errorLogger.logInfo('system', '✓ No active threads to clean up');
+      return;
+    }
+    
+    this.errorLogger.logInfo('system', `🧹 Cleaning up ${this.activeThreads.size} active threads...`);
+    
+    let totalCancelled = 0;
+    for (const [threadId, storyId] of this.activeThreads.entries()) {
+      this.errorLogger.logInfo('system', `  Checking thread ${threadId} (story: ${storyId})...`);
+      const cancelled = await this.cancelThreadRuns(threadId);
+      totalCancelled += cancelled;
+    }
+    
+    if (totalCancelled > 0) {
+      this.errorLogger.logInfo('system', `✓ Cancelled ${totalCancelled} stuck runs`);
+    } else {
+      this.errorLogger.logInfo('system', '✓ No stuck runs found');
+    }
+    
+    // Clear the active threads map
+    this.activeThreads.clear();
+  }
+  
+  /**
    * Create or retrieve Assistant with stable instructions
    * DEPRECATED - Use ensureAssistantPool() instead
    */
@@ -411,6 +469,9 @@ OUTPUT REQUIREMENT:
         created: new Date().toISOString()
       }
     });
+    
+    // Track this thread for cleanup
+    this.activeThreads.set(thread.id, storyId);
     
     this.errorLogger.logInfo(storyId, `Created thread: ${thread.id}`);
     return thread.id;
@@ -801,6 +862,10 @@ OUTPUT REQUIREMENT:
     this.errorLogger.logInfo(storyId, '🚀 Starting host-controlled continuity generation...');
     
     try {
+      // 0. Clean up any stuck runs from previous attempts
+      await this.cleanupAllStuckRuns();
+      progressManager?.updateTask(parentTaskId, 'running', 'Cleaned up stuck runs');
+      
       // Verify master_context.json exists
       if (!fs.existsSync(contextFilePath)) {
         throw new Error(`Master context file not found at: ${contextFilePath}\n\nThis file should have been created during the story processing workflow. Please ensure the story was fully processed before attempting script generation.`);
