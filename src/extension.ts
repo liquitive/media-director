@@ -544,8 +544,19 @@ async function checkPythonDependencies(context: vscode.ExtensionContext): Promis
     }
 }
 
-export function deactivate() {
+export async function deactivate() {
     logger.info('Sora Video Director extension deactivating...');
+    
+    // Flush all pending realtime sync writes before shutdown
+    try {
+        const { RealtimeSyncService } = await import('./services/realtimeSyncService');
+        const syncService = RealtimeSyncService.getInstance();
+        logger.info('Flushing all pending writes before shutdown...');
+        await syncService.flushAll();
+        logger.info('All writes flushed successfully');
+    } catch (error) {
+        logger.error('Error flushing pending writes during deactivation:', error);
+    }
     
     // Clean up storyline editor provider
     if (storylineEditorProvider) {

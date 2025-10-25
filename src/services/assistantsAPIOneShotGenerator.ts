@@ -21,6 +21,14 @@ export class AssistantsAPIOneShotGenerator {
   private errorLogger: ExplicitErrorLogger;
   
   // ========================================
+  // Multi-Assistant Pool Strategy
+  // ========================================
+  private static readonly ASSISTANT_POOL_SIZE = 4;
+  private static readonly POST_SUBMIT_TIMEOUT_MS = 30000; // 30 seconds after submitToolOutputs
+  private assistantPool: string[] = []; // Pool of assistant IDs
+  private currentAssistantIndex: number = 0;
+  
+  // ========================================
   // Phase 2: Assistant Management
   // ========================================
   
@@ -170,6 +178,11 @@ OUTPUT REQUIREMENT:
                   type: 'array',
                   description: 'Characters appearing for first time (from host)',
                   items: { type: 'string' }
+                },
+                usedAssets: {
+                  type: 'array',
+                  description: '[OPTIONAL/DEPRECATED] Asset IDs referenced in this segment. The host now uses narrativeContext for continuity tracking.',
+                  items: { type: 'string' }
                 }
               },
               required: ['segmentId', 'structuredFields']
@@ -274,8 +287,76 @@ OUTPUT REQUIREMENT:
   // ========================================
   
   /**
+   * Initialize pool of assistants (3-4 instances ready to use)
+   */
+  private async ensureAssistantPool(): Promise<void> {
+    const poolCacheKey = `assistantPool_${AssistantsAPIOneShotGenerator.POLICY_VERSION}`;
+    const cachedPool = this.context.globalState.get<string[]>(poolCacheKey);
+    
+    if (cachedPool && cachedPool.length >= AssistantsAPIOneShotGenerator.ASSISTANT_POOL_SIZE) {
+      // Verify all assistants still exist
+      const validAssistants: string[] = [];
+      for (const assistantId of cachedPool) {
+        try {
+          const assistant = await this.openai.beta.assistants.retrieve(assistantId);
+          if (assistant.metadata?.policy_version === AssistantsAPIOneShotGenerator.POLICY_VERSION) {
+            validAssistants.push(assistantId);
+          }
+        } catch (error) {
+          this.errorLogger.logInfo('system', `Cached assistant ${assistantId} not found, will create new one`);
+        }
+      }
+      
+      if (validAssistants.length >= AssistantsAPIOneShotGenerator.ASSISTANT_POOL_SIZE) {
+        this.assistantPool = validAssistants;
+        this.errorLogger.logInfo('system', `Reusing assistant pool (${validAssistants.length} assistants)`);
+        return;
+      }
+    }
+    
+    // Create missing assistants to fill the pool
+    this.errorLogger.logInfo('system', `Creating assistant pool (${AssistantsAPIOneShotGenerator.ASSISTANT_POOL_SIZE} assistants)...`);
+    this.assistantPool = [];
+    
+    for (let i = 0; i < AssistantsAPIOneShotGenerator.ASSISTANT_POOL_SIZE; i++) {
+      const assistant = await this.openai.beta.assistants.create({
+        name: `Sora Video Director Pool ${i + 1}`,
+        instructions: AssistantsAPIOneShotGenerator.ASSISTANT_CORE_INSTRUCTIONS,
+        model: 'gpt-4.1',
+        tools: [AssistantsAPIOneShotGenerator.GENERATE_SEGMENTS_TOOL],
+        metadata: {
+          policy_version: AssistantsAPIOneShotGenerator.POLICY_VERSION,
+          pool_index: i.toString()
+        }
+      });
+      
+      this.assistantPool.push(assistant.id);
+      this.errorLogger.logInfo('system', `Created assistant ${i + 1}/${AssistantsAPIOneShotGenerator.ASSISTANT_POOL_SIZE}: ${assistant.id}`);
+    }
+    
+    // Cache the pool
+    await this.context.globalState.update(poolCacheKey, this.assistantPool);
+    this.errorLogger.logInfo('system', `Assistant pool ready with ${this.assistantPool.length} instances`);
+  }
+  
+  /**
+   * Get next available assistant from pool (round-robin)
+   */
+  private getNextAssistant(): string {
+    if (this.assistantPool.length === 0) {
+      throw new Error('Assistant pool not initialized');
+    }
+    
+    const assistantId = this.assistantPool[this.currentAssistantIndex];
+    this.currentAssistantIndex = (this.currentAssistantIndex + 1) % this.assistantPool.length;
+    
+    this.errorLogger.logInfo('system', `Using assistant ${assistantId} (index ${this.currentAssistantIndex})`);
+    return assistantId;
+  }
+  
+  /**
    * Create or retrieve Assistant with stable instructions
-   * Caches by policy version to enable updates without breaking existing assistants
+   * DEPRECATED - Use ensureAssistantPool() instead
    */
   private async ensureAssistant(): Promise<string> {
     const cacheKey = `assistantId_${AssistantsAPIOneShotGenerator.POLICY_VERSION}`;
@@ -732,10 +813,10 @@ OUTPUT REQUIREMENT:
       this.errorLogger.logInfo(storyId, `📊 Context: ${contextData.segments?.length || 0} segments, ${contextData.storyAssets?.length || 0} assets`);
       progressManager?.updateTask(parentTaskId, 'running', `Read master context: ${contextData.segments?.length} segments`);
 
-      // 1. Ensure Assistant with stable instructions
-      const assistantId = await this.ensureAssistant();
-      this.errorLogger.logInfo(storyId, `✓ Using assistant: ${assistantId}`);
-      progressManager?.updateTask(parentTaskId, 'running', 'Assistant ready');
+      // 1. Ensure Assistant Pool is ready (3-4 instances)
+      await this.ensureAssistantPool();
+      this.errorLogger.logInfo(storyId, `✓ Assistant pool ready with ${this.assistantPool.length} instances`);
+      progressManager?.updateTask(parentTaskId, 'running', 'Assistant pool ready');
 
       // 2. Create thread for this story (reused across batches)
       const threadId = await this.createStoryThread(storyId);
@@ -755,8 +836,8 @@ OUTPUT REQUIREMENT:
       const linter = new ContinuityLinter(characterProfiles);
       this.errorLogger.logInfo(storyId, `✓ Loaded ${Object.keys(characterProfiles).length} character profiles`);
 
-      // 5. Process in batches
-      const BATCH_SIZE = 20;
+      // 5. Process in batches (reduced from 20 to 10 to avoid token limits)
+      const BATCH_SIZE = 10;
       const allSegments = contextData.segments || [];
       const totalSegments = allSegments.length;
       const numBatches = Math.ceil(totalSegments / BATCH_SIZE);
@@ -826,43 +907,102 @@ OUTPUT REQUIREMENT:
           ]
         });
 
-        // g. Create run
-        const run = await this.openai.beta.threads.runs.create(threadId, {
-          assistant_id: assistantId,
-          tool_choice: { type: 'function', function: { name: 'generateSegments' } },
-          max_completion_tokens: 16384,
-          instructions: batchIndex > 0
-            ? 'Maintain consistency with prior batch. No trait repetition.'
-            : 'First batch: establish visual foundation and tone.'
-        });
+        // g. Create run with batch-specific instructions
+        let instructions: string;
+        if (batchIndex === 0) {
+          // First batch: Extract WHERE info from research for explicit scene establishment
+          const research = contextData.research || '';
+          const whereMatch = research.match(/2\.\s*WHERE\s*\n([\s\S]*?)(?=\n3\.|$)/i);
+          const whereInfo = whereMatch ? whereMatch[1].trim().substring(0, 500) : '';
+          
+          instructions = `FIRST BATCH - ESTABLISH THE WORLD:
 
-        // h. Wait specifically for requires_action
-        this.errorLogger.logInfo(storyId, `  ⏳ Waiting for AI response...`);
-        const raRun = await this.waitUntilRunState(threadId, run.id, ['requires_action']);
+Your first segment (segment 1) is THE ESTABLISHING SHOT. It must visually ground the viewer in the story's location and atmosphere.
+
+Key requirements for segment 1:
+- MUST include explicit location details (island, coastline, cliffs, architecture, landscape features)
+- MUST establish the time period through visual elements
+- MUST set the atmospheric tone (desolate, peaceful, foreboding, etc.)
+- Include environmental details (weather, lighting, natural features)
+
+${whereInfo ? `Location context:\n${whereInfo}\n` : ''}
+
+For all segments in this batch:
+- Build the visual foundation and tone
+- Introduce key environmental elements
+- No trait repetition - describe characters and locations fresh each time`;
+        } else {
+          instructions = 'Maintain consistency with prior batch. No trait repetition.';
+        }
         
-        // i. Extract tool call args (while run is in requires_action)
-        const structuredFields = await this.parseSegmentResponse(raRun, threadId, storyId);
-        this.errorLogger.logInfo(storyId, `  ✓ Received ${structuredFields.length} structured field sets`);
-        this.errorLogger.logInfo(storyId, `  DEBUG: First segment structure: ${JSON.stringify(structuredFields[0], null, 2).substring(0, 500)}`);
+        // g. Retry loop for stuck/expired runs - use different assistant on each retry
+        let structuredFields: any[] = [];
+        let retryCount = 0;
+        const MAX_RETRIES = this.assistantPool.length; // Try each assistant once
         
-        // j. Submit tool outputs and wait for completed to free the thread
-        this.errorLogger.logInfo(storyId, `  ✓ Submitting tool outputs to complete run ${run.id}...`);
-        const toolCalls = raRun.required_action?.submit_tool_outputs?.tool_calls ?? [];
-        this.errorLogger.logInfo(storyId, `  DEBUG: Found ${toolCalls.length} tool calls to submit outputs for`);
-        await this.openai.beta.threads.runs.submitToolOutputs(
-          run.id,
-          {
-            thread_id: threadId,
-            tool_outputs: toolCalls.map((tc: any) => ({
-              tool_call_id: tc.id,
-              output: 'ok'
-            }))
+        while (retryCount < MAX_RETRIES) {
+          try {
+            const currentAssistant = this.getNextAssistant();
+            this.errorLogger.logInfo(storyId, `  🤖 Attempt ${retryCount + 1}/${MAX_RETRIES}: Using assistant ${currentAssistant}`);
+            
+            const run = await this.openai.beta.threads.runs.create(threadId, {
+              assistant_id: currentAssistant,
+              tool_choice: { type: 'function', function: { name: 'generateSegments' } },
+              max_completion_tokens: 32768,
+              instructions
+            });
+
+            // h. Wait specifically for requires_action (longer timeout for initial response)
+            this.errorLogger.logInfo(storyId, `  ⏳ Waiting for AI response...`);
+            const raRun = await this.waitUntilRunState(threadId, run.id, ['requires_action'], 180000, false); // 3 min for response, don't cancel
+            
+            // i. Extract tool call args (while run is in requires_action)
+            structuredFields = await this.parseSegmentResponse(raRun, threadId, storyId);
+            this.errorLogger.logInfo(storyId, `  ✓ Received ${structuredFields.length} structured field sets`);
+            
+            // CRITICAL: Check if we got all segments
+            const expectedCount = batchSegments.length;
+            if (structuredFields.length < expectedCount) {
+              throw new Error(`Incomplete response: got ${structuredFields.length}/${expectedCount} segments. Assistant likely hit token limit or stopped early.`);
+            }
+            
+            this.errorLogger.logInfo(storyId, `  ✅ Complete batch: ${structuredFields.length}/${expectedCount} segments`);
+            this.errorLogger.logInfo(storyId, `  DEBUG: First segment structure: ${JSON.stringify(structuredFields[0], null, 2).substring(0, 500)}`);
+            
+            // j. Submit tool outputs and wait for completed (AGGRESSIVE 30s timeout)
+            this.errorLogger.logInfo(storyId, `  ✓ Submitting tool outputs to complete run ${run.id}...`);
+            const toolCalls = raRun.required_action?.submit_tool_outputs?.tool_calls ?? [];
+            this.errorLogger.logInfo(storyId, `  DEBUG: Found ${toolCalls.length} tool calls to submit outputs for`);
+            await this.openai.beta.threads.runs.submitToolOutputs(
+              run.id,
+              {
+                thread_id: threadId,
+                tool_outputs: toolCalls.map((tc: any) => ({
+                  tool_call_id: tc.id,
+                  output: 'ok'
+                }))
+              }
+            );
+            
+            // k. Wait for run to complete with AGGRESSIVE 30-second timeout
+            this.errorLogger.logInfo(storyId, `  ⏳ Waiting for run completion (30s timeout)...`);
+            await this.waitUntilRunState(threadId, run.id, ['completed'], AssistantsAPIOneShotGenerator.POST_SUBMIT_TIMEOUT_MS, true); // 30s, cancel on timeout
+            
+            this.errorLogger.logInfo(storyId, `  ✅ Run completed successfully, thread is free`);
+            break; // Success - exit retry loop
+            
+          } catch (error) {
+            retryCount++;
+            this.errorLogger.logWarning('system', `Batch ${batchIndex + 1} attempt ${retryCount} failed: ${error instanceof Error ? error.message : String(error)}`);
+            
+            if (retryCount >= MAX_RETRIES) {
+              throw new Error(`Batch ${batchIndex + 1} failed after ${MAX_RETRIES} attempts with different assistants: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            
+            this.errorLogger.logInfo(storyId, `  🔄 Retrying with next assistant in pool...`);
+            await new Promise(r => setTimeout(r, 2000)); // 2s delay before retry
           }
-        );
-        
-        // k. Wait for run to complete before touching thread again
-        await this.waitUntilRunState(threadId, run.id, ['completed']);
-        this.errorLogger.logInfo(storyId, `  ✓ Run ${run.id} completed, thread is free`);
+        }
         
         // l. Run critic pass
         const critiqued = await this.runCriticPass(structuredFields, batchContext);
@@ -946,20 +1086,26 @@ OUTPUT REQUIREMENT:
         );
         this.errorLogger.logInfo(storyId, `  ✓ Validated and patched continuity`);
 
-        allResults.push(...validated);
+        // n. Attach original context segments for persistence
+        const validatedWithContext = validated.map((aiSeg: any, idx: number) => ({
+          ...aiSeg,
+          contextSegment: segmentsWithContinuity[idx]  // Original segment with id, narrativeContext, etc.
+        }));
 
-        // n. Save continuity state for next batch
+        allResults.push(...validatedWithContext);
+
+        // o. Save continuity state for next batch
         priorState = {
           ...finalState,
           recentPrompts: [
-            ...validated.map((s: any) => s.finalPrompt),
+            ...validatedWithContext.map((s: any) => s.finalPrompt),
             ...(priorState?.recentPrompts || [])
           ].slice(0, 8)
         };
         fs.writeFileSync(continuityStatePath, JSON.stringify(priorState, null, 2));
 
-        // o. Emit comprehensive batch metrics
-        const batchMetrics = this.computeBatchMetrics(validated);
+        // p. Emit comprehensive batch metrics
+        const batchMetrics = this.computeBatchMetrics(validatedWithContext);
         this.errorLogger.logInfo(storyId,
           `  📊 Metrics: ${(batchMetrics.cleanRate * 100).toFixed(1)}% clean, ` +
           `overlap ${batchMetrics.avgNgramOverlap.toFixed(3)}, ` +
@@ -1362,22 +1508,56 @@ ${contextJson}
   
   /**
    * Wait for run to reach one of the target states
+   * Aggressive timeout strategy: 30s after submitToolOutputs, then cancel and switch assistant
    */
   private async waitUntilRunState(
     threadId: string,
     runId: string,
     targets: Array<'completed' | 'cancelled' | 'failed' | 'expired' | 'requires_action'>,
-    timeoutMs = 120000
+    timeoutMs: number = AssistantsAPIOneShotGenerator.POST_SUBMIT_TIMEOUT_MS,
+    cancelOnTimeout: boolean = true
   ): Promise<any> {
     const started = Date.now();
     while (true) {
       const run = await this.openai.beta.threads.runs.retrieve(runId, { thread_id: threadId });
+      
+      // If we hit a terminal error state (expired, failed, cancelled), throw immediately
+      if (run.status === 'expired') {
+        this.errorLogger.logWarning('system', `Run ${runId} expired. OpenAI gave up (usually due to excessive processing time or API load)`);
+        throw new Error(`Run expired: ${JSON.stringify(run.last_error)}`);
+      }
+      if (run.status === 'failed') {
+        this.errorLogger.logWarning('system', `Run ${runId} failed: ${JSON.stringify(run.last_error)}`);
+        throw new Error(`Run failed: ${JSON.stringify(run.last_error)}`);
+      }
+      if (run.status === 'cancelled') {
+        this.errorLogger.logWarning('system', `Run ${runId} was cancelled`);
+        throw new Error('Run was cancelled');
+      }
+      
+      // Check if we reached target state
       if (targets.includes(run.status as any)) {
         return run;
       }
-      if (Date.now() - started > timeoutMs) {
-        throw new Error(`Run ${runId} did not reach ${targets.join('|')} within ${timeoutMs}ms (last=${run.status})`);
+      
+      // Check timeout
+      const elapsed = Date.now() - started;
+      if (elapsed > timeoutMs) {
+        this.errorLogger.logWarning('system', `Run ${runId} timeout after ${elapsed}ms (status=${run.status}). Cancelling...`);
+        
+        if (cancelOnTimeout) {
+          try {
+            // Cancel the stuck run
+            await this.openai.beta.threads.runs.cancel(runId, { thread_id: threadId });
+            this.errorLogger.logInfo('system', `Cancelled stuck run ${runId}`);
+          } catch (cancelError) {
+            this.errorLogger.logWarning('system', `Failed to cancel run: ${cancelError}`);
+          }
+        }
+        
+        throw new Error(`Run ${runId} timeout after ${elapsed}ms (last=${run.status})`);
       }
+      
       await new Promise(r => setTimeout(r, 500));
     }
   }

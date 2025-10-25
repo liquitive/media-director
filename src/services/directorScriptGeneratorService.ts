@@ -10,8 +10,10 @@ import { AIService } from './aiService';
 import { AudioAnalysisService } from './audioAnalysisService';
 import { StoryResearchService } from './storyResearchService';
 import { ProgressManager } from './progressManager';
+import { RealtimeSyncService } from './realtimeSyncService';
 import { FileManager } from '../utils/fileManager';
 import { logger } from '../utils/logger';
+import { ExplicitErrorLogger } from '../utils/explicitErrorLogger';
 import { Notifications } from '../utils/notifications';
 import { Segment } from '../models/story';
 import { SegmentPair } from '../types/asset.types';
@@ -28,6 +30,8 @@ export class DirectorScriptGeneratorService {
     private executionService: ExecutionService;
     private aiService: AIService;
     private progressManager: ProgressManager;
+    private errorLogger: ExplicitErrorLogger;
+    private realtimeSync: RealtimeSyncService;
 
     constructor(
         storyService: StoryService,
@@ -44,6 +48,10 @@ export class DirectorScriptGeneratorService {
         this.executionService = executionService;
         this.aiService = aiService;
         this.progressManager = ProgressManager.getInstance();
+        this.realtimeSync = RealtimeSyncService.getInstance();
+        
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+        this.errorLogger = new ExplicitErrorLogger(workspaceRoot);
     }
 
     /**
@@ -347,6 +355,77 @@ export class DirectorScriptGeneratorService {
     }
 
     /**
+     * Infer narrative context from segment text and assets
+     */
+    private inferNarrativeContext(
+        segmentText: string, 
+        assets: any[], 
+        research: string,
+        index: number
+    ): {
+        characterFocus: string[];
+        locationContinuity?: string;
+        sceneType: string;
+        emotionalTone: string;
+    } {
+        const textLower = segmentText.toLowerCase();
+        
+        // Extract characters mentioned in segment text
+        const characterFocus = assets
+            .filter((a: any) => a.type === 'character')
+            .filter((a: any) => {
+                const nameLower = a.name.toLowerCase();
+                return textLower.includes(nameLower) || 
+                       textLower.includes('narrator') || 
+                       textLower.includes('i ') || 
+                       textLower.includes('my ') ||
+                       textLower.includes('me ');
+            })
+            .map((a: any) => a.name);
+        
+        // Extract location mentioned in segment text
+        let locationContinuity: string | undefined;
+        const locationAsset = assets
+            .filter((a: any) => a.type === 'location')
+            .find((a: any) => textLower.includes(a.name.toLowerCase()));
+        
+        if (locationAsset) {
+            locationContinuity = locationAsset.name;
+        } else {
+            // Fallback: extract primary location from research WHERE section
+            const whereMatch = research.match(/2\.\s*WHERE\s*\n[\s\S]*?setting is[^,.]*([\w\s]+)/i);
+            if (whereMatch) {
+                locationContinuity = whereMatch[1].trim();
+            }
+        }
+        
+        // Infer scene type
+        let sceneType = 'action';
+        if (index === 0 || textLower.includes('establishing') || textLower.includes('landscape')) {
+            sceneType = 'establishing';
+        } else if (textLower.includes('instrumental') || !textLower.match(/\w{3,}/)) {
+            sceneType = 'transition';
+        } else if (textLower.includes('speaks') || textLower.includes('says') || textLower.includes('voice')) {
+            sceneType = 'dialogue';
+        }
+        
+        // Infer emotional tone from text keywords
+        let emotionalTone = 'neutral';
+        if (textLower.match(/fear|terror|dread|afraid/)) emotionalTone = 'fearful';
+        else if (textLower.match(/awe|wonder|reverent|sacred/)) emotionalTone = 'reverent';
+        else if (textLower.match(/peace|calm|still|quiet/)) emotionalTone = 'peaceful';
+        else if (textLower.match(/dark|decay|desolate|bleak/)) emotionalTone = 'somber';
+        else if (textLower.match(/light|bright|radiant|glory/)) emotionalTone = 'transcendent';
+        
+        return {
+            characterFocus,
+            locationContinuity,
+            sceneType,
+            emotionalTone
+        };
+    }
+
+    /**
      * Updates the existing master context file with analysis data
      * Master context is created at story inception, this populates it
      */
@@ -369,7 +448,7 @@ export class DirectorScriptGeneratorService {
             
             this.progressManager.updateTask(contextTaskId, 'running', 'Assembling master context updates...');
             
-            // Use segments from timing map, adding segment IDs and used assets
+            // Use segments from timing map, adding segment IDs and narrativeContext
             const segments = (timingMap.segments || []).map((seg: any, index: number) => ({
                 id: `segment_${index + 1}`,
                 index: index,
@@ -380,7 +459,13 @@ export class DirectorScriptGeneratorService {
                 hasVocals: seg.hasVocals || false,
                 energy: seg.energy || 0.5,
                 beats: seg.beats || 0,
-                usedAssets: []  // Will be populated by AI during script generation
+                usedAssets: [],  // Will be populated by AI during script generation
+                narrativeContext: this.inferNarrativeContext(
+                    seg.text || '',
+                    extractedAssets,
+                    researchText,
+                    index
+                )
             }));
             
             // Group extracted assets by type (these are story-specific assets)
@@ -402,9 +487,19 @@ export class DirectorScriptGeneratorService {
             masterContext.segments = segments;
             masterContext.modifiedAt = new Date().toISOString();
             
-            // Save updated master context
+            // Save updated master context AND emit event for realtime sync
             this.progressManager.updateTask(contextTaskId, 'running', 'Saving master context...');
             await fs.promises.writeFile(contextPath, JSON.stringify(masterContext, null, 2));
+            
+            // Emit event to ensure realtime sync is aware of the new structure
+            this.realtimeSync.emitMasterContextChange(storyId, contextPath, {
+                transcription,
+                research: researchText,
+                audioAnalysis,
+                timingMap,
+                storyAssets,
+                segments
+            });
             
             this.progressManager.updateTask(contextTaskId, 'success', `Master context updated with ${segments.length} segments`);
             logger.info(`Master context updated for story ${storyId} with ${segments.length} segments`);
@@ -488,28 +583,34 @@ export class DirectorScriptGeneratorService {
                     // Cross-segment continuity data
                     continuityReference: pair.aiSegment.continuityReference,
                     continuityType: pair.aiSegment.continuityType || 'none',
-                    narrativeContext: pair.aiSegment.narrativeContext
+                    // narrativeContext comes from HOST (master_context.json), not AI
+                    narrativeContext: pair.contextSegment.narrativeContext || pair.aiSegment.narrativeContext
                 };
                 
                 segments.push(mergedSegment);
                 
                 const segmentFilePath = path.join(segmentsDir, `${segmentId}.json`);
-                const segmentFileData = {
-                    version: '1.0',
-                    storyId: storyId,
-                    segmentIndex: fileSegmentIndex,
-                    createdAt: new Date().toISOString(),
-                    ...mergedSegment
-                };
-                await fs.promises.writeFile(segmentFilePath, JSON.stringify(segmentFileData, null, 2));
                 
-                logger.info(`Written ${segmentId}: "${mergedSegment.text}" (${mergedSegment.duration}s)`);
+                // Emit event to RealtimeSyncService for event-driven persistence
+                this.realtimeSync.emitSegmentChange(
+                    storyId,
+                    segmentId,
+                    fileSegmentIndex,
+                    mergedSegment,
+                    segmentFilePath
+                );
+                
+                logger.info(`Queued ${segmentId}: "${mergedSegment.text}" (${mergedSegment.duration}s)`);
                 fileSegmentIndex++;
             }
             
             // Update story with Script
             story.directorScript = segments;
             this.storyService.updateStory(storyId, story);
+            
+            // Flush all pending writes to ensure everything is persisted
+            this.progressManager.updateTask(scriptTaskId, 'running', 'Flushing pending writes...');
+            await this.realtimeSync.flushAll();
             
             this.progressManager.updateTask(scriptTaskId, 'success', `Generated ${segments.length} segment prompts`);
             logger.info(`Script generated for story ${storyId}`);
@@ -578,11 +679,20 @@ export class DirectorScriptGeneratorService {
             // Step 7: Generate Script
             await this.generateScriptInner(storyId, contextFilePath, mainTaskId);
             
+            // Step 8: Flush all pending writes
+            this.progressManager.updateTask(mainTaskId, 'running', 'Final sync to filesystem...');
+            await this.realtimeSync.flushAll();
+            
             this.progressManager.updateTask(mainTaskId, 'success', 'Script generation complete!');
             Notifications.info('Script generated successfully!');
             
         } catch (error: any) {
-            logger.error('Full script generation failed', error);
+            this.errorLogger.logCritical(
+                storyId,
+                'Full script generation failed',
+                { error: error.message },
+                error instanceof Error ? error : undefined
+            );
             this.progressManager.updateTask(mainTaskId, 'failed', `Generation failed: ${error.message}`);
             Notifications.error(`Script generation failed: ${error.message}`);
             throw error;
@@ -607,7 +717,7 @@ export class DirectorScriptGeneratorService {
             }
 
             const storyDir = this.storyService.getStoryDirectory(storyId);
-            const contextFilePath = path.join(storyDir, 'master_context.json');
+            const contextFilePath = path.join(storyDir, 'source', 'master_context.json');
             
             // Verify master context exists
             if (!fs.existsSync(contextFilePath)) {
@@ -671,7 +781,12 @@ export class DirectorScriptGeneratorService {
             Notifications.info(segmentInstance ? 'Segment regenerated successfully!' : 'Script regenerated successfully!');
             
         } catch (error: any) {
-            logger.error('Script regeneration failed', error);
+            this.errorLogger.logCritical(
+                storyId,
+                'Script regeneration failed',
+                { error: error.message },
+                error instanceof Error ? error : undefined
+            );
             this.progressManager.updateTask(mainTaskId, 'failed', `Regeneration failed: ${error.message}`);
             Notifications.error(`Script regeneration failed: ${error.message}`);
             throw error;
@@ -681,42 +796,19 @@ export class DirectorScriptGeneratorService {
     /**
      * Sync data to master_context.json in real-time
      * This ensures master_context is always up-to-date as data is acquired
+     * Uses RealtimeSyncService for event-driven persistence
      */
     private async syncToMasterContext(storyId: string, updates: any): Promise<void> {
         try {
             const storyDir = this.storyService.getStoryDirectory(storyId);
             const masterContextPath = path.join(storyDir, 'source', 'master_context.json');
             
-            // Ensure source directory exists
-            const sourceDir = path.join(storyDir, 'source');
-            if (!fs.existsSync(sourceDir)) {
-                await fs.promises.mkdir(sourceDir, { recursive: true });
-            }
+            // Emit event to RealtimeSyncService - it will handle the actual write
+            this.realtimeSync.emitMasterContextChange(storyId, masterContextPath, updates);
             
-            // Read existing master_context.json (or create empty one)
-            let masterContext: any = {};
-            if (fs.existsSync(masterContextPath)) {
-                const content = await fs.promises.readFile(masterContextPath, 'utf-8');
-                masterContext = JSON.parse(content);
-            }
-            
-            // Merge updates
-            masterContext = {
-                ...masterContext,
-                ...updates,
-                modifiedAt: new Date().toISOString()
-            };
-            
-            // Write back to file
-            await fs.promises.writeFile(
-                masterContextPath,
-                JSON.stringify(masterContext, null, 2),
-                'utf-8'
-            );
-            
-            logger.info(`Synced to master_context.json: ${Object.keys(updates).join(', ')}`);
+            logger.info(`Queued master_context.json sync: ${Object.keys(updates).join(', ')}`);
         } catch (error) {
-            logger.error('Failed to sync to master_context.json:', error);
+            logger.error('Failed to queue master_context.json sync:', error);
             // Don't throw - we don't want to break the workflow if sync fails
         }
     }
