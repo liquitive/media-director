@@ -2768,19 +2768,35 @@ async function openSegmentEditorPanel(
             }
         );
 
-        // Load HTML content
+        // Load HTML content with multiple fallback paths
         let htmlContent: string;
         try {
+            // Try 1: Extension URI (development mode)
             const htmlPath = vscode.Uri.joinPath(context!.extensionUri, 'src', 'webviews', 'segmentEditorPanel.html');
             htmlContent = require('fs').readFileSync(htmlPath.fsPath, 'utf8');
+            logger.info('✓ Loaded segment editor HTML from extension URI');
         } catch (error) {
             try {
-                const htmlPath = require('path').join(__dirname, '../../src/webviews/segmentEditorPanel.html');
+                // Try 2: Relative to out directory (production - compiled)
+                const htmlPath = require('path').join(__dirname, '../webviews/segmentEditorPanel.html');
                 htmlContent = require('fs').readFileSync(htmlPath, 'utf8');
+                logger.info('✓ Loaded segment editor HTML from out/webviews');
             } catch (error2) {
-                Notifications.error('Failed to load segment editor HTML');
-                logger.error('Failed to load segment editor HTML:', error2);
-                return;
+                try {
+                    // Try 3: From src directory relative to out
+                    const htmlPath = require('path').join(__dirname, '../../src/webviews/segmentEditorPanel.html');
+                    htmlContent = require('fs').readFileSync(htmlPath, 'utf8');
+                    logger.info('✓ Loaded segment editor HTML from src/webviews');
+                } catch (error3) {
+                    // Final error with detailed logging
+                    logger.error('❌ Failed to load segment editor HTML from all paths');
+                    logger.error('  Path 1 (extension URI):', vscode.Uri.joinPath(context!.extensionUri, 'src', 'webviews', 'segmentEditorPanel.html').fsPath);
+                    logger.error('  Path 2 (out/webviews):', require('path').join(__dirname, '../webviews/segmentEditorPanel.html'));
+                    logger.error('  Path 3 (src/webviews):', require('path').join(__dirname, '../../src/webviews/segmentEditorPanel.html'));
+                    logger.error('  Error:', error3);
+                    Notifications.error('Failed to load segment editor HTML. Please check extension installation.');
+                    return;
+                }
             }
         }
         panel.webview.html = htmlContent;

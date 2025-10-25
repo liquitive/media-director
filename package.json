@@ -495,11 +495,6 @@
           "group": "edit@1"
         },
         {
-          "command": "sora.editSegment",
-          "when": "view == soraStories && viewItem == segment",
-          "group": "edit@2"
-        },
-        {
           "command": "sora.previewSegment",
           "when": "view == soraStories && viewItem == segment",
           "group": "navigation@1"
@@ -655,7 +650,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && npm run copy-webviews",
+    "copy-webviews": "mkdir -p out/webviews && cp src/webviews/*.html out/webviews/",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
     "lint": "eslint src --ext ts",
