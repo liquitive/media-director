@@ -1053,9 +1053,8 @@ For all segments in this batch:
             const expectedCount = batchSegments.length;
             let accumulatedSegments: any[] = [];
             let responseRound = 0;
-            const MAX_RESPONSE_ROUNDS = 15; // Allow up to 15 rounds of tool responses
             
-            while (accumulatedSegments.length < expectedCount && responseRound < MAX_RESPONSE_ROUNDS) {
+            while (accumulatedSegments.length < expectedCount) {
               responseRound++;
               this.errorLogger.logInfo(storyId, `  🔄 Response round ${responseRound}: Processing tool calls...`);
               
