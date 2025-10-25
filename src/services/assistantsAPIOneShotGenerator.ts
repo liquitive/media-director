@@ -1035,14 +1035,52 @@ For all segments in this batch:
 
             // h. Wait specifically for requires_action (longer timeout for initial response)
             this.errorLogger.logInfo(storyId, `  ⏳ Waiting for AI response...`);
-            const raRun = await this.waitUntilRunState(currentThreadId, run.id, ['requires_action'], 180000, false); // 3 min for response, don't cancel
+            let raRun = await this.waitUntilRunState(currentThreadId, run.id, ['requires_action'], 180000, false); // 3 min for response, don't cancel
             
-            // i. Extract tool call args (while run is in requires_action)
-            structuredFields = await this.parseSegmentResponse(raRun, currentThreadId, storyId);
-            this.errorLogger.logInfo(storyId, `  ✓ Received ${structuredFields.length} structured field sets`);
+            // i. Extract tool call args and KEEP POLLING until we have all segments
+            const expectedCount = batchSegments.length;
+            let accumulatedSegments: any[] = [];
+            let pollAttempts = 0;
+            const MAX_POLL_ATTEMPTS = 20; // Poll up to 20 times (20 * 3s = 1 min max)
+            
+            while (accumulatedSegments.length < expectedCount && pollAttempts < MAX_POLL_ATTEMPTS) {
+              // Parse all available segments so far
+              const currentSegments = await this.parseSegmentResponse(raRun, currentThreadId, storyId);
+              
+              if (currentSegments.length > accumulatedSegments.length) {
+                // We got new segments!
+                accumulatedSegments = currentSegments;
+                this.errorLogger.logInfo(storyId, `  ✓ Received ${accumulatedSegments.length}/${expectedCount} segments so far...`);
+                
+                if (accumulatedSegments.length >= expectedCount) {
+                  break; // We have everything!
+                }
+              }
+              
+              // Check if run is still working or completed
+              const currentRun = await this.openai.beta.threads.runs.retrieve(run.id, { thread_id: currentThreadId });
+              
+              if (currentRun.status === 'requires_action') {
+                // Still generating, wait a bit and poll again
+                this.errorLogger.logInfo(storyId, `  ⏳ Waiting for more segments (${accumulatedSegments.length}/${expectedCount})...`);
+                await new Promise(r => setTimeout(r, 3000)); // 3 second poll interval
+                pollAttempts++;
+                raRun = currentRun; // Update for next iteration
+              } else if (currentRun.status === 'completed' || currentRun.status === 'failed' || currentRun.status === 'cancelled') {
+                // Run finished without giving us all segments
+                this.errorLogger.logWarning('system', `Run finished with status ${currentRun.status} after ${accumulatedSegments.length}/${expectedCount} segments`);
+                break;
+              } else {
+                // Some other status, keep waiting
+                await new Promise(r => setTimeout(r, 3000));
+                pollAttempts++;
+              }
+            }
+            
+            structuredFields = accumulatedSegments;
+            this.errorLogger.logInfo(storyId, `  ✓ Final: Received ${structuredFields.length}/${expectedCount} structured field sets`);
             
             // CRITICAL: Check if we got all segments
-            const expectedCount = batchSegments.length;
             if (structuredFields.length < expectedCount) {
               // Cancel the incomplete run before throwing error
               try {
@@ -1051,7 +1089,7 @@ For all segments in this batch:
               } catch (cancelError) {
                 this.errorLogger.logWarning('system', `Failed to cancel incomplete run: ${cancelError}`);
               }
-              throw new Error(`Incomplete response: got ${structuredFields.length}/${expectedCount} segments. Assistant likely hit token limit or stopped early.`);
+              throw new Error(`Incomplete response: got ${structuredFields.length}/${expectedCount} segments after ${pollAttempts} polling attempts. Assistant likely hit token limit or stopped early.`);
             }
             
             this.errorLogger.logInfo(storyId, `  ✅ Complete batch: ${structuredFields.length}/${expectedCount} segments`);
@@ -1683,44 +1721,56 @@ ${contextJson}
           throw new Error('No tool calls found in requires_action response');
         }
         
-        // Find the generateSegments function call
-        const generateCall = toolCalls.find((call: any) => 
+        // Find ALL generateSegments function calls (assistant might call it multiple times)
+        const generateCalls = toolCalls.filter((call: any) => 
           call.type === 'function' && call.function?.name === 'generateSegments'
         );
         
-        if (!generateCall) {
+        if (generateCalls.length === 0) {
           throw new Error('generateSegments function call not found in tool calls');
         }
         
-        // Parse with cleaning to handle junk after JSON
-        this.errorLogger.logInfo(storyId, `Raw function arguments: ${String(generateCall.function.arguments).substring(0, 1000)}...`);
-        let args: any;
-        try {
-          args = JSON.parse(generateCall.function.arguments);
-          this.errorLogger.logInfo(storyId, `Parsed function arguments successfully`);
-        } catch {
-          this.errorLogger.logWarning(storyId, 'Function args not clean JSON, attempting recovery', {
-            preview: String(generateCall.function.arguments).slice(0, 200)
-          });
-          const cleaned = this.cleanJSON(String(generateCall.function.arguments));
-          this.errorLogger.logInfo(storyId, `Cleaned function arguments: ${cleaned.substring(0, 1000)}...`);
-          args = JSON.parse(cleaned);
+        this.errorLogger.logInfo(storyId, `Found ${generateCalls.length} generateSegments calls`);
+        
+        // Accumulate segments from ALL calls
+        const allSegments: any[] = [];
+        
+        for (const generateCall of generateCalls) {
+          // Parse with cleaning to handle junk after JSON
+          this.errorLogger.logInfo(storyId, `Raw function arguments: ${String(generateCall.function.arguments).substring(0, 1000)}...`);
+          let args: any;
+          try {
+            args = JSON.parse(generateCall.function.arguments);
+            this.errorLogger.logInfo(storyId, `Parsed function arguments successfully`);
+          } catch {
+            this.errorLogger.logWarning(storyId, 'Function args not clean JSON, attempting recovery', {
+              preview: String(generateCall.function.arguments).slice(0, 200)
+            });
+            const cleaned = this.cleanJSON(String(generateCall.function.arguments));
+            this.errorLogger.logInfo(storyId, `Cleaned function arguments: ${cleaned.substring(0, 1000)}...`);
+            args = JSON.parse(cleaned);
+          }
+          
+          this.errorLogger.logInfo(storyId, `Function call result: ${JSON.stringify(args, null, 2).substring(0, 1000)}...`);
+          
+          if (!args.segments || !Array.isArray(args.segments)) {
+            this.errorLogger.logWarning(storyId, 'Invalid function call response: missing segments array, skipping this call');
+            continue;
+          }
+          
+          // Check for violations (out-of-context names)
+          if (args.violations && Array.isArray(args.violations) && args.violations.length > 0) {
+            this.errorLogger.logWarning(storyId, `Model used out-of-context names: ${args.violations.join(', ')}`);
+            // Continue but log the issue
+          }
+          
+          allSegments.push(...args.segments);
         }
         
-        this.errorLogger.logInfo(storyId, `Function call result: ${JSON.stringify(args, null, 2).substring(0, 1000)}...`);
-        
-        if (!args.segments || !Array.isArray(args.segments)) {
-          throw new Error('Invalid function call response: missing segments array');
-        }
-        
-        // Check for violations (out-of-context names)
-        if (args.violations && Array.isArray(args.violations) && args.violations.length > 0) {
-          this.errorLogger.logWarning(storyId, `Model used out-of-context names: ${args.violations.join(', ')}`);
-          // Continue but log the issue
-        }
+        this.errorLogger.logInfo(storyId, `Accumulated ${allSegments.length} segments from ${generateCalls.length} calls`);
         
         // Validate each segment has required fields
-        for (const segment of args.segments) {
+        for (const segment of allSegments) {
           // Accept both 'segmentId' and 'id' field names
           const segmentId = segment.segmentId || segment.id;
           
@@ -1752,9 +1802,9 @@ ${contextJson}
           }
         }
         
-        this.errorLogger.logInfo(storyId, `Parsed ${args.segments.length} segments from function call`);
+        this.errorLogger.logInfo(storyId, `Parsed ${allSegments.length} total segments from all function calls`);
         
-        return args.segments;
+        return allSegments;
       } else if (run.status === 'completed') {
         // If completed without function call, try to parse the text message as fallback
         this.errorLogger.logWarning('system', 'Run completed without function call, falling back to text parsing');
