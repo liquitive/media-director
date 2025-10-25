@@ -503,8 +503,7 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
      */
     private async pollVideoStatus(videoId: string, maxAttempts: number = 60, progressCallback?: (progress: number, message: string) => void): Promise<{ id: string; url?: string }> {
         const progressHistory: number[] = [];
-        const STALL_CHECK_WINDOW = 20; // Check if progress stalled over last 20 attempts
-        const STALL_THRESHOLD = 0.1; // Progress must increase by at least 0.1% on average
+        const STALL_CHECK_WINDOW = 20; // Check if progress stuck (0% change) over last 20 attempts
         let attempt = 0;
         
         // Poll indefinitely until completion, failure, or stall
@@ -558,18 +557,24 @@ OUTPUT: Return ONLY the final optimized prompt text. No preamble, no markdown, n
                 // Track progress history for stall detection
                 progressHistory.push(currentProgress);
                 
-                // 🔍 STALL DETECTION: Check if progress has stalled over last N attempts
+                // 🔍 STALL DETECTION: Check if progress is stuck (no change over last N attempts)
                 if (progressHistory.length >= STALL_CHECK_WINDOW) {
                     const recentProgress = progressHistory.slice(-STALL_CHECK_WINDOW);
-                    const progressIncrease = recentProgress[recentProgress.length - 1] - recentProgress[0];
-                    const avgIncrease = progressIncrease / STALL_CHECK_WINDOW;
+                    const firstProgress = recentProgress[0];
+                    const lastProgress = recentProgress[recentProgress.length - 1];
+                    const progressIncrease = lastProgress - firstProgress;
                     
-                    if (avgIncrease < STALL_THRESHOLD && currentProgress < 100) {
-                        logger.error(`⚠️  Video generation appears stalled: only ${progressIncrease.toFixed(2)}% progress over last ${STALL_CHECK_WINDOW} attempts (avg ${avgIncrease.toFixed(3)}%/attempt)`);
-                        throw new Error(`Video generation stalled: progress has not increased significantly over last ${STALL_CHECK_WINDOW} attempts (${Math.round(STALL_CHECK_WINDOW * 10 / 60)} minutes). Current: ${currentProgress}%, Status: ${video.status}. Video ID: ${videoId}`);
+                    // STALLED = progress remains EXACTLY THE SAME (0% change)
+                    if (progressIncrease === 0 && currentProgress < 100) {
+                        logger.error(`⚠️  Video generation STALLED: progress stuck at ${currentProgress}% for last ${STALL_CHECK_WINDOW} attempts (${Math.round(STALL_CHECK_WINDOW * 10 / 60)} minutes)`);
+                        logger.error(`🔄 This segment will be terminated and can be re-triggered for generation.`);
+                        throw new Error(`Video generation stalled: progress stuck at ${currentProgress}% for ${STALL_CHECK_WINDOW} attempts. Status: ${video.status}. Video ID: ${videoId}. Re-trigger segment generation.`);
                     }
                     
-                    logger.info(`📈 Progress trending: +${progressIncrease.toFixed(2)}% over last ${STALL_CHECK_WINDOW} attempts (avg ${avgIncrease.toFixed(3)}%/attempt) - continuing...`);
+                    // Any progress (even 0.1%) means it's still working - continue!
+                    if (progressIncrease > 0) {
+                        logger.info(`📈 Progress continues: +${progressIncrease.toFixed(2)}% over last ${STALL_CHECK_WINDOW} attempts - continuing...`);
+                    }
                 }
                 
                 // Wait before next poll
