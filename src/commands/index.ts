@@ -224,6 +224,11 @@ export function registerCommands(context: vscode.ExtensionContext, services: Ser
                 segmentIndex = segmentIndexArg;
             }
             
+            // Track that segment editor is being opened
+            if (storyId && segmentIndex !== undefined) {
+                storyTreeProvider.saveLastOpenedItem('segment', storyId, segmentIndex);
+            }
+            
             await openSegmentEditorPanel(storyService, storyId, segmentIndex, context);
         })
     );

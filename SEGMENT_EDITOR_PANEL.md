@@ -328,5 +328,3 @@ Possible improvements for future iterations:
 - The panel retains context when hidden (VS Code feature)
 - Segment switching within the panel allows efficient editing of multiple segments
 - The continuity reference system ensures proper visual consistency across segments
-
-

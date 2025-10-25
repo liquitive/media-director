@@ -3,17 +3,66 @@
  */
 
 export interface Segment {
+    // Schema metadata
+    schema?: { name: string; version: string };
+    generator?: { service: string; build: string; timestamp: string };
+    
+    // Core identifiers
     id: string;
+    segmentIndex?: number;  // Strict ordering
     text: string;  // Transcript portion (preserved)
-    prompt: string;  // AI-generated prompt for video generation
+    prompt: string;  // AI-generated prompt for video generation (or fused from structured fields)
     duration: number;
     startTime: number;
     actualDuration?: number;
     status: 'pending' | 'generating' | 'completed' | 'failed' | 'validated';
     videoPath?: string;
     error?: string;
+    
+    // Storyline tracking (for intercuts)
+    storylineId?: string;
+    sceneId?: string;
+    batchId?: string;
+    
+    // Host-computed continuity (deterministic, Record-based for fast lookup)
+    characters?: string[];  // Normalized asset names present in this segment
+    location?: string;      // Normalized asset name for location
+    continuityRefsByCharacter?: Record<string, string>;  // { "John": "segment_17", "Mary": "segment_12" }
+    locationRef?: string;   // Most recent segment at same location
+    firstAppearanceByCharacter?: string[];  // Characters appearing for first time
+    
+    // Appearance state tracking (prevents wardrobe drift)
+    appearanceByCharacter?: Record<string, string>;  // { "John": "john_default" }
+    identityLocklineByCharacter?: Record<string, string>;  // Canonical one-liner per character
+    
+    // Structured fields (preserved for debugging)
+    structuredFields?: {
+        actions?: string[];
+        shot?: string;
+        lighting?: string;
+        environment_delta?: string;
+        props_delta?: string;
+        redundancy_score?: number;
+        novelty_score?: number;
+        continuity_confidence?: number;
+        forbidden_traits_used?: string[];
+    };
+    
+    // Execution backfill
+    remixSources?: {
+        byCharacter?: Record<string, { refSegmentId: string; videoId?: string }>;
+        byLocation?: { refSegmentId: string; videoId?: string };
+    };
+    
+    // QA & observability
+    violations?: string[];  // Alias/asset mismatches
+    driftFlags?: string[];  // Linter-detected trait re-descriptions
+    criticFlags?: string[];  // From critic pass
+    ngramOverlap?: number;  // Similarity to recent segments
+    compressed?: boolean;   // Did compression pass run?
+    
+    // Legacy fields (backward compat)
     usedAssets?: string[]; // IDs of assets used in this segment
-    // Cross-segment continuity
     continuityReference?: string; // ID of segment to use as remix reference
     continuityType?: 'sequential' | 'narrative' | 'character' | 'location' | 'none';
     narrativeContext?: {
@@ -22,6 +71,10 @@ export interface Segment {
         locationContinuity?: string; // Location reference for continuity
         emotionalTone?: string; // Emotional context for continuity
     };
+    
+    // Timestamps
+    createdAt?: string;
+    updatedAt?: string;
 }
 
 /**

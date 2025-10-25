@@ -10,6 +10,9 @@ import * as vscode from 'vscode';
 import { SegmentPrompt, SegmentPair } from '../types/asset.types';
 import { Segment } from '../models/story';
 import { ExplicitErrorLogger } from '../utils/explicitErrorLogger';
+import { buildContinuityMap, loadCharacterProfiles, ContinuityState } from './continuityCalculator';
+import { ContinuityLinter } from './continuityLinter';
+import { isTooSimilar, findSimilarSegment } from '../utils/ngramUtils';
 
 export class AssistantsAPIOneShotGenerator {
   private openai: OpenAI;
@@ -17,70 +20,243 @@ export class AssistantsAPIOneShotGenerator {
   private context: vscode.ExtensionContext;
   private errorLogger: ExplicitErrorLogger;
   
-  // Shared function tool definition to avoid duplication
+  // ========================================
+  // Phase 2: Assistant Management
+  // ========================================
+  
+  /**
+   * Policy version for Assistant instructions
+   * Increment when making breaking changes to instructions or tool schemas
+   */
+  private static readonly POLICY_VERSION = '2025-10-25';
+  
+  /**
+   * Stable policy baked into Assistant (created once, reused)
+   * These instructions never change per-story/batch
+   */
+  private static readonly ASSISTANT_CORE_INSTRUCTIONS = `You are generating STRUCTURED FIELDS for video generation. Do NOT write final prose.
+
+CRITICAL: Output structured fields ONLY. Host will compose the final prompt.
+
+CONTINUITY CONTRACT (BINDING):
+- For characters in continuityRefsByCharacter: do NOT mention fixed traits (age, face, hair, wardrobe)
+- ONLY describe: actions, blocking, environment/prop changes
+- For firstAppearanceByCharacter: identityLockline will be used (don't repeat)
+
+STRUCTURED FIELDS (strict):
+1. actions[] (max 3): Verbs-first, active voice. Example: "kneels, hands trembling; gazes upward"
+2. shot (1 line): Camera angle, movement. Example: "Medium close, slow dolly left, shallow DOF"
+3. lighting (1 line): Quality, direction. Example: "Golden hour, rim light, soft shadows"
+4. environment_delta: ONLY changes vs ref. Empty if unchanged. Example: "wind picks up, dust swirls"
+5. props_delta: ONLY new props. Empty if none. Example: "scroll in hand"
+
+SELF-ASSESSMENT (required):
+- redundancy_score: <0.3 required (are you repeating prior segments?)
+- novelty_score: 0.4-0.8 target (fresh but not wild)
+- continuity_confidence: >0.7 required (following refs correctly?)
+- forbidden_traits_used[]: list any fixed traits you mentioned despite continuity
+
+FORBIDDEN PHRASES:
+- "The camera...", "A shot of...", "The mood is..."
+- Fixed traits if continuityRefsByCharacter exists
+- Passive voice
+- Adjective stacking
+
+OUTPUT REQUIREMENT:
+- Always call generateSegments function with complete structured fields
+- Temperature: stability over novelty
+- Brevity: 50-80 words per fused prompt`;
+  
+  // ========================================
+  // Phase 3: Tool Schemas
+  // ========================================
+  
+  /**
+   * Main generation tool - outputs STRUCTURED FIELDS (not final prose)
+   * Host will fuse these fields into finalPrompt
+   */
   private static readonly GENERATE_SEGMENTS_TOOL = {
     type: 'function' as const,
     function: {
       name: 'generateSegments',
-      description: 'Generate video segment prompts for all segments in the story with cross-segment continuity analysis',
+      description: 'Generate structured fields for video segments. Output ONLY structured fields, NOT final prose. Host will fuse fields into prompt.',
       parameters: {
         type: 'object',
         properties: {
           segments: {
             type: 'array',
-            description: 'Array of generated segment prompts with continuity references',
+            description: 'Array of segments with structured fields',
             items: {
               type: 'object',
               properties: {
                 segmentId: {
                   type: 'string',
-                  description: 'Unique identifier for the segment (e.g., "segment_1", "segment_2")'
+                  description: 'Segment identifier (e.g., "segment_1")'
                 },
-                finalPrompt: {
-                  type: 'string',
-                  description: 'The final prompt for video generation (max 400 tokens)'
-                },
-                continuityReference: {
-                  type: 'string',
-                  description: 'ID of segment to use as remix reference for character/location continuity (optional)'
-                },
-                continuityType: {
-                  type: 'string',
-                  enum: ['sequential', 'narrative', 'character', 'location', 'none'],
-                  description: 'Type of continuity relationship with reference segment'
-                },
-                narrativeContext: {
+                // Structured fields (host will fuse these)
+                structuredFields: {
                   type: 'object',
+                  description: 'Structured fields that host will compose into finalPrompt',
                   properties: {
-                    sceneType: {
-                      type: 'string',
-                      enum: ['establishing', 'action', 'dialogue', 'transition'],
-                      description: 'Type of scene for continuity matching'
+                    actions: {
+                      type: 'array',
+                      description: 'Max 3 actions, verb-first. Example: ["kneels", "hands trembling", "gazes upward"]',
+                      items: { type: 'string' },
+                      maxItems: 3
                     },
-                    characterFocus: {
+                    shot: {
+                      type: 'string',
+                      description: 'One line: camera angle, movement. Example: "Medium close, slow dolly left, shallow DOF"'
+                    },
+                    lighting: {
+                      type: 'string',
+                      description: 'One line: quality, direction. Example: "Golden hour, rim light, soft shadows"'
+                    },
+                    environment_delta: {
+                      type: 'string',
+                      description: 'ONLY changes from continuity ref. Empty if unchanged. Example: "wind picks up, dust swirls"'
+                    },
+                    props_delta: {
+                      type: 'string',
+                      description: 'ONLY new props. Empty if none. Example: "scroll in hand"'
+                    },
+                    // Self-assessment scores
+                    redundancy_score: {
+                      type: 'number',
+                      description: 'How repetitive vs prior segments? Must be <0.3. Range 0-1.',
+                      minimum: 0,
+                      maximum: 1
+                    },
+                    novelty_score: {
+                      type: 'number',
+                      description: 'Fresh but not wild? Target 0.4-0.8. Range 0-1.',
+                      minimum: 0,
+                      maximum: 1
+                    },
+                    continuity_confidence: {
+                      type: 'number',
+                      description: 'Following continuity refs correctly? Must be >0.7. Range 0-1.',
+                      minimum: 0,
+                      maximum: 1
+                    },
+                    forbidden_traits_used: {
+                      type: 'array',
+                      description: 'List any fixed traits mentioned despite continuity refs. Empty if none.',
+                      items: { type: 'string' }
+                    }
+                  },
+                  required: ['actions', 'shot', 'lighting', 'redundancy_score', 'novelty_score', 'continuity_confidence', 'forbidden_traits_used']
+                },
+                // Host-computed continuity (read-only, for reference)
+                characters: {
+                  type: 'array',
+                  description: 'Characters in this segment (from host)',
+                  items: { type: 'string' }
+                },
+                location: {
+                  type: 'string',
+                  description: 'Location name (from host)'
+                },
+                continuityRefsByCharacter: {
+                  type: 'object',
+                  description: 'Per-character continuity refs (from host)',
+                  additionalProperties: { type: 'string' }
+                },
+                locationRef: {
+                  type: 'string',
+                  description: 'Location continuity ref (from host)'
+                },
+                firstAppearanceByCharacter: {
+                  type: 'array',
+                  description: 'Characters appearing for first time (from host)',
+                  items: { type: 'string' }
+                }
+              },
+              required: ['segmentId', 'structuredFields']
+            }
+          },
+          violations: {
+            type: 'array',
+            description: 'Names used that are not in context.storyAssets[].name',
+            items: { type: 'string' }
+          }
+        },
+        required: ['segments']
+      }
+    }
+  };
+  
+  /**
+   * Critic tool - reviews and rewrites structured fields if violations found
+   */
+  private static readonly CRITIC_TOOL = {
+    type: 'function' as const,
+    function: {
+      name: 'critiqueAndRewrite',
+      description: 'Review structured fields and rewrite if violations found (redundancy >0.3, novelty out of range, forbidden traits used)',
+      parameters: {
+        type: 'object',
+        properties: {
+          segments: {
+            type: 'array',
+            description: 'Array of critiqued/rewritten segments',
+            items: {
+              type: 'object',
+              properties: {
+                segmentId: {
+                  type: 'string',
+                  description: 'Segment identifier'
+                },
+                critique: {
+                  type: 'object',
+                  description: 'Critique results',
+                  properties: {
+                    hasViolations: {
+                      type: 'boolean',
+                      description: 'True if violations found'
+                    },
+                    violationTypes: {
+                      type: 'array',
+                      description: 'Types of violations found',
+                      items: {
+                        type: 'string',
+                        enum: ['high_redundancy', 'low_novelty', 'high_novelty', 'trait_drift', 'filler_phrases']
+                      }
+                    },
+                    issues: {
+                      type: 'array',
+                      description: 'Specific issues found',
+                      items: { type: 'string' }
+                    }
+                  },
+                  required: ['hasViolations', 'violationTypes', 'issues']
+                },
+                rewrittenFields: {
+                  type: 'object',
+                  description: 'Rewritten structured fields (only if hasViolations=true)',
+                  properties: {
+                    actions: {
                       type: 'array',
                       items: { type: 'string' },
-                      description: 'Primary characters in this segment for continuity matching'
+                      maxItems: 3
                     },
-                    locationContinuity: {
-                      type: 'string',
-                      description: 'Location reference for continuity matching'
-                    },
-                    emotionalTone: {
-                      type: 'string',
-                      description: 'Emotional context for continuity matching'
+                    shot: { type: 'string' },
+                    lighting: { type: 'string' },
+                    environment_delta: { type: 'string' },
+                    props_delta: { type: 'string' },
+                    redundancy_score: { type: 'number', minimum: 0, maximum: 1 },
+                    novelty_score: { type: 'number', minimum: 0, maximum: 1 },
+                    continuity_confidence: { type: 'number', minimum: 0, maximum: 1 },
+                    forbidden_traits_used: {
+                      type: 'array',
+                      items: { type: 'string' }
                     }
                   }
                 }
               },
-              required: ['segmentId', 'finalPrompt']
+              required: ['segmentId', 'critique']
             }
           }
-        },
-        violations: {
-          type: 'array',
-          description: 'Names used that are not present in context.storyAssets[].name',
-          items: { type: 'string' }
         },
         required: ['segments']
       }
@@ -93,10 +269,446 @@ export class AssistantsAPIOneShotGenerator {
     this.errorLogger = errorLogger;
   }
   
-
+  // ========================================
+  // Phase 2: Assistant Management Methods
+  // ========================================
+  
   /**
-   * Generate all segments using proper vector store file_search
-   * Automatically batches for stories with many segments (>35)
+   * Create or retrieve Assistant with stable instructions
+   * Caches by policy version to enable updates without breaking existing assistants
+   */
+  private async ensureAssistant(): Promise<string> {
+    const cacheKey = `assistantId_${AssistantsAPIOneShotGenerator.POLICY_VERSION}`;
+    const existingId = this.context.globalState.get<string>(cacheKey);
+    
+    if (existingId) {
+      try {
+        const assistant = await this.openai.beta.assistants.retrieve(existingId);
+        if (assistant.metadata?.policy_version === AssistantsAPIOneShotGenerator.POLICY_VERSION) {
+          this.errorLogger.logInfo('system', `Reusing cached assistant: ${existingId} (policy ${AssistantsAPIOneShotGenerator.POLICY_VERSION})`);
+          return existingId;
+        }
+      } catch (error) {
+        // Assistant deleted or not found, create new
+        this.errorLogger.logInfo('system', `Cached assistant ${existingId} not found, creating new one`);
+      }
+    }
+    
+    // Create new assistant with stable instructions
+    const assistant = await this.openai.beta.assistants.create({
+      name: 'Sora Video Director - Structured Fields',
+      model: 'gpt-4.1',
+      instructions: AssistantsAPIOneShotGenerator.ASSISTANT_CORE_INSTRUCTIONS,
+      tools: [
+        { type: 'file_search' },
+        AssistantsAPIOneShotGenerator.GENERATE_SEGMENTS_TOOL,
+        AssistantsAPIOneShotGenerator.CRITIC_TOOL
+      ],
+      temperature: 0.3,  // Stability over novelty
+      metadata: {
+        policy_version: AssistantsAPIOneShotGenerator.POLICY_VERSION,
+        created: new Date().toISOString()
+      }
+    });
+    
+    // Cache assistant ID
+    await this.context.globalState.update(cacheKey, assistant.id);
+    this.errorLogger.logInfo('system', `Created new assistant: ${assistant.id} (policy ${AssistantsAPIOneShotGenerator.POLICY_VERSION})`);
+    
+    return assistant.id;
+  }
+  
+  /**
+   * Create per-story thread
+   * Thread is reused across batches for the same story
+   * Note: We use inline context instead of vector stores for simplicity
+   */
+  private async createStoryThread(storyId: string): Promise<string> {
+    const thread = await this.openai.beta.threads.create({
+      metadata: {
+        storyId,
+        created: new Date().toISOString()
+      }
+    });
+    
+    this.errorLogger.logInfo(storyId, `Created thread: ${thread.id}`);
+    return thread.id;
+  }
+  
+  /**
+   * Build batch memo (sent per-run, not in Assistant)
+   * Provides context about which segments are being processed
+   */
+  private buildBatchMemo(
+    batchIndex: number,
+    segmentIds: string[],
+    batchBrief?: string[]
+  ): string {
+    const lines = [
+      `Batch ${batchIndex + 1}: segments ${segmentIds[0]} to ${segmentIds[segmentIds.length - 1]}`,
+      '',
+      'Batch Brief:',
+      ...(batchBrief || ['First batch - establish visual foundation and tone']),
+      '',
+      'Continuity maps and segment data provided in context JSON below.'
+    ];
+    
+    return lines.join('\n');
+  }
+  
+  // ========================================
+  // Phase 4: Fusion & Compression Methods
+  // ========================================
+  
+  /**
+   * Fuse structured fields into finalPrompt
+   * Composes: locklines + actions + deltas + shot + lighting
+   */
+  private fusePrompt(structuredFields: any, continuityRefs: any): string {
+    const parts: string[] = [];
+    
+    // For first appearances: add identity lockline
+    if (continuityRefs.firstAppearanceByCharacter?.length > 0) {
+      for (const char of continuityRefs.firstAppearanceByCharacter) {
+        const lockline = continuityRefs.identityLocklineByCharacter?.[char];
+        if (lockline) {
+          parts.push(lockline);
+        }
+      }
+    }
+    
+    // Actions (verb-first, comma-separated)
+    if (structuredFields.actions?.length > 0) {
+      parts.push(structuredFields.actions.join(', '));
+    }
+    
+    // Environment delta (only changes from continuity ref)
+    if (structuredFields.environment_delta && structuredFields.environment_delta.trim()) {
+      parts.push(structuredFields.environment_delta);
+    }
+    
+    // Props delta (only new props)
+    if (structuredFields.props_delta && structuredFields.props_delta.trim()) {
+      parts.push(structuredFields.props_delta);
+    }
+    
+    // Shot/camera
+    if (structuredFields.shot && structuredFields.shot.trim()) {
+      parts.push(structuredFields.shot);
+    }
+    
+    // Lighting
+    if (structuredFields.lighting && structuredFields.lighting.trim()) {
+      parts.push(structuredFields.lighting);
+    }
+    
+    // Join with semicolons for clear separation
+    return parts.filter(Boolean).join('; ');
+  }
+  
+  /**
+   * Compress prompt using chain-of-density style
+   * Removes filler words, prioritizes nouns/verbs, targets specific word count
+   */
+  private async compressPrompt(prompt: string, targetWords: number = 70): Promise<string> {
+    // Filler words to remove
+    const fillerWords = new Set([
+      'the', 'a', 'an', 'very', 'really', 'quite', 'rather', 'somewhat',
+      'just', 'actually', 'basically', 'literally', 'simply', 'clearly',
+      'obviously', 'perhaps', 'maybe', 'possibly', 'probably'
+    ]);
+    
+    // Filler phrases to remove
+    const fillerPhrases = [
+      /\bthe camera\b/gi,
+      /\ba shot of\b/gi,
+      /\bthe mood is\b/gi,
+      /\bemphasizing\b/gi,
+      /\bthat is\b/gi,
+      /\bwhich is\b/gi,
+      /\bin order to\b/gi,
+      /\bfor the purpose of\b/gi
+    ];
+    
+    let compressed = prompt;
+    
+    // Remove filler phrases
+    for (const pattern of fillerPhrases) {
+      compressed = compressed.replace(pattern, '');
+    }
+    
+    // Split into tokens
+    const tokens = compressed.split(/\s+/).filter(Boolean);
+    
+    // If already under target, return cleaned version
+    if (tokens.length <= targetWords) {
+      return tokens.join(' ').replace(/\s+/g, ' ').replace(/\s*;/g, ';').trim();
+    }
+    
+    // Aggressive compression: remove filler words
+    const importantTokens = tokens.filter(token => {
+      const lower = token.toLowerCase().replace(/[^\w]/g, '');
+      return !fillerWords.has(lower);
+    });
+    
+    // If still too long, truncate at sentence boundaries
+    if (importantTokens.length > targetWords) {
+      // Try to keep complete semicolon-separated segments
+      const result = [];
+      let count = 0;
+      
+      for (const token of importantTokens) {
+        result.push(token);
+        count++;
+        
+        if (count >= targetWords && token.endsWith(';')) {
+          break;
+        }
+      }
+      
+      return result.join(' ').replace(/\s+/g, ' ').replace(/\s*;/g, ';').trim();
+    }
+    
+    return importantTokens.join(' ').replace(/\s+/g, ' ').replace(/\s*;/g, ';').trim();
+  }
+  
+  // ========================================
+  // Phase 6: Critic & Metrics Methods
+  // ========================================
+  
+  /**
+   * Run critic pass on structured fields
+   * Checks scores and rewrites if violations found
+   */
+  private async runCriticPass(segments: any[], batchContext: any): Promise<any[]> {
+    // For now, just return segments as-is
+    // Full critic implementation would call CRITIC_TOOL if violations found
+    const results = [];
+    
+    for (const seg of segments) {
+      const fields = seg.structuredFields || {};
+      const violations: string[] = [];
+      
+      // Check redundancy score
+      if (fields.redundancy_score !== undefined && fields.redundancy_score > 0.3) {
+        violations.push('high_redundancy');
+      }
+      
+      // Check novelty score
+      if (fields.novelty_score !== undefined) {
+        if (fields.novelty_score < 0.4) violations.push('low_novelty');
+        if (fields.novelty_score > 0.8) violations.push('high_novelty');
+      }
+      
+      // Check continuity confidence
+      if (fields.continuity_confidence !== undefined && fields.continuity_confidence < 0.7) {
+        violations.push('low_continuity_confidence');
+      }
+      
+      // Check forbidden traits
+      if (fields.forbidden_traits_used && fields.forbidden_traits_used.length > 0) {
+        violations.push('trait_drift');
+      }
+      
+      // If violations found, log them (would trigger rewrite in full implementation)
+      if (violations.length > 0) {
+        this.errorLogger.logWarning(batchContext.storyId, 
+          `Segment ${seg.segmentId} has violations: ${violations.join(', ')}`
+        );
+        // In full implementation, would call CRITIC_TOOL here
+        // For now, just flag it
+        seg.criticFlags = violations;
+      }
+      
+      results.push(seg);
+    }
+    
+    return results;
+  }
+  
+  /**
+   * Compute batch metrics for QA tracking
+   */
+  private computeBatchMetrics(segments: any[]): {
+    cleanRate: number;
+    avgNgramOverlap: number;
+    compressedCount: number;
+    avgRedundancyScore: number;
+    avgNoveltyScore: number;
+    avgContinuityConfidence: number;
+    driftCount: number;
+    criticCount: number;
+  } {
+    let cleanCount = 0;
+    let totalOverlap = 0;
+    let compressedCount = 0;
+    let totalRedundancy = 0;
+    let redundancyCount = 0;
+    let totalNovelty = 0;
+    let noveltyCount = 0;
+    let totalConfidence = 0;
+    let confidenceCount = 0;
+    let driftCount = 0;
+    let criticCount = 0;
+    
+    for (const seg of segments) {
+      // Clean if no drift or critic flags
+      if ((!seg.driftFlags || seg.driftFlags.length === 0) && 
+          (!seg.criticFlags || seg.criticFlags.length === 0)) {
+        cleanCount++;
+      }
+      
+      // N-gram overlap
+      if (seg.ngramOverlap !== undefined) {
+        totalOverlap += seg.ngramOverlap;
+      }
+      
+      // Compressed
+      if (seg.compressed) {
+        compressedCount++;
+      }
+      
+      // Drift flags
+      if (seg.driftFlags && seg.driftFlags.length > 0) {
+        driftCount++;
+      }
+      
+      // Critic flags
+      if (seg.criticFlags && seg.criticFlags.length > 0) {
+        criticCount++;
+      }
+      
+      // Self-assessment scores
+      if (seg.structuredFields?.redundancy_score !== undefined) {
+        totalRedundancy += seg.structuredFields.redundancy_score;
+        redundancyCount++;
+      }
+      if (seg.structuredFields?.novelty_score !== undefined) {
+        totalNovelty += seg.structuredFields.novelty_score;
+        noveltyCount++;
+      }
+      if (seg.structuredFields?.continuity_confidence !== undefined) {
+        totalConfidence += seg.structuredFields.continuity_confidence;
+        confidenceCount++;
+      }
+    }
+    
+    return {
+      cleanRate: segments.length > 0 ? cleanCount / segments.length : 1,
+      avgNgramOverlap: segments.length > 0 ? totalOverlap / segments.length : 0,
+      compressedCount,
+      avgRedundancyScore: redundancyCount > 0 ? totalRedundancy / redundancyCount : 0,
+      avgNoveltyScore: noveltyCount > 0 ? totalNovelty / noveltyCount : 0,
+      avgContinuityConfidence: confidenceCount > 0 ? totalConfidence / confidenceCount : 0,
+      driftCount,
+      criticCount
+    };
+  }
+  
+  /**
+   * Summarize previous batch for batch brief
+   */
+  private summarizePreviousBatch(segments: any[]): string[] {
+    if (!segments || segments.length === 0) {
+      return ['First batch - establish visual foundation'];
+    }
+    
+    const brief: string[] = [];
+    
+    // Count unique characters
+    const charactersSet = new Set<string>();
+    segments.forEach(seg => {
+      if (seg.characters) {
+        seg.characters.forEach((ch: string) => charactersSet.add(ch));
+      }
+    });
+    
+    // Count unique locations
+    const locationsSet = new Set<string>();
+    segments.forEach(seg => {
+      if (seg.location) {
+        locationsSet.add(seg.location);
+      }
+    });
+    
+    brief.push(`Previous batch: ${segments.length} segments`);
+    if (charactersSet.size > 0) {
+      brief.push(`Characters: ${Array.from(charactersSet).slice(0, 5).join(', ')}`);
+    }
+    if (locationsSet.size > 0) {
+      brief.push(`Locations: ${Array.from(locationsSet).slice(0, 3).join(', ')}`);
+    }
+    
+    // Add quality notes
+    const metrics = this.computeBatchMetrics(segments);
+    brief.push(`Quality: ${(metrics.cleanRate * 100).toFixed(0)}% clean, avg redundancy ${metrics.avgRedundancyScore.toFixed(2)}`);
+    
+    return brief;
+  }
+  
+  /**
+   * Validate and patch continuity references
+   * Ensures host-computed refs override any model output
+   */
+  private validateAndPatchContinuity(
+    segments: any[],
+    continuityMap: Record<string, any>,
+    storyAssets: any[],
+    linter: ContinuityLinter
+  ): any[] {
+    return segments.map(seg => {
+      const refs = continuityMap[seg.segmentId];
+      if (refs) {
+        // OVERWRITE with host-computed refs (host is source of truth)
+        seg.continuityRefsByCharacter = refs.continuityRefsByCharacter;
+        seg.locationRef = refs.locationRef;
+        seg.firstAppearanceByCharacter = refs.firstAppearanceByCharacter;
+        seg.appearanceByCharacter = refs.appearanceByCharacter;
+        seg.identityLocklineByCharacter = refs.identityLocklineByCharacter;
+      }
+      return seg;
+    });
+  }
+  
+  /**
+   * Convert results to SegmentPair map for compatibility
+   */
+  private convertToSegmentPairs(results: any[]): Map<string, SegmentPair> {
+    const map = new Map<string, SegmentPair>();
+    
+    for (let i = 0; i < results.length; i++) {
+      const seg = results[i];
+      const segmentId = `segment_${i + 1}`;
+      
+      map.set(segmentId, {
+        aiSegment: seg as SegmentPrompt,
+        contextSegment: seg.contextSegment || seg
+      });
+    }
+    
+    return map;
+  }
+  
+
+  // ========================================
+  // Phase 5: Batch Processing (Main Entry Point)
+  // ========================================
+  
+  /**
+   * Generate all segments with host-controlled continuity system
+   * 
+   * Flow:
+   * 1. Ensure Assistant with stable instructions
+   * 2. Create thread for this story (reused across batches)
+   * 3. Process segments in batches of 20
+   * 4. Compute continuity deterministically (host-side)
+   * 5. Extract structured fields from model
+   * 6. Run critic pass for quality checks
+   * 7. Fuse fields into final prompts
+   * 8. Lint (n-gram + continuity + length)
+   * 9. Compress prompts >80 words
+   * 10. Validate and patch with host continuity refs
+   * 11. Save state and emit metrics
    */
   async generateAllSegments(
     contextFilePath: string,
@@ -105,259 +717,285 @@ export class AssistantsAPIOneShotGenerator {
     parentTaskId?: string
   ): Promise<Map<string, SegmentPair>> {
     
-    this.errorLogger.logInfo(storyId, 'Starting one-shot segment generation...');
+    this.errorLogger.logInfo(storyId, '🚀 Starting host-controlled continuity generation...');
+    
     try {
-      // Verify master_context.json exists in the expected location
+      // Verify master_context.json exists
       if (!fs.existsSync(contextFilePath)) {
         throw new Error(`Master context file not found at: ${contextFilePath}\n\nThis file should have been created during the story processing workflow. Please ensure the story was fully processed before attempting script generation.`);
       }
 
-      this.errorLogger.logInfo(storyId, `Reading master context file from: ${contextFilePath}`);
-
       // Read context and log stats
       const fileContent = fs.readFileSync(contextFilePath, 'utf-8');
       const contextData = JSON.parse(fileContent);
-      this.errorLogger.logInfo(storyId, `Context file contains ${contextData.segments?.length || 0} segments`);
-      this.errorLogger.logInfo(storyId, `Context file contains ${contextData.storyAssets?.length || 0} assets`);
-      this.errorLogger.logInfo(storyId, `Context file research text length: ${contextData.research?.length || 0} chars`);
-      this.errorLogger.logInfo(storyId, `Context file transcription: ${contextData.transcription?.substring(0, 200)}...`);
-      if (contextData.segments && contextData.segments.length > 0) {
-        this.errorLogger.logInfo(storyId, `First segment: ${JSON.stringify(contextData.segments[0], null, 2).substring(0, 300)}...`);
-      }
-      if (contextData.storyAssets && contextData.storyAssets.length > 0) {
-        this.errorLogger.logInfo(storyId, `First asset: ${JSON.stringify(contextData.storyAssets[0], null, 2).substring(0, 300)}...`);
-      }
       
+      this.errorLogger.logInfo(storyId, `📊 Context: ${contextData.segments?.length || 0} segments, ${contextData.storyAssets?.length || 0} assets`);
       progressManager?.updateTask(parentTaskId, 'running', `Read master context: ${contextData.segments?.length} segments`);
 
-      // Check if we need to batch (16384 tokens / ~420 tokens per segment ≈ 35 segments max)
-      const totalSegments = contextData.segments?.length || 0;
-      const SEGMENTS_PER_BATCH = 35;
-      
-      if (totalSegments > SEGMENTS_PER_BATCH) {
-        this.errorLogger.logInfo(storyId, `Story has ${totalSegments} segments, using batch generation...`);
-        progressManager?.updateTask(parentTaskId, 'running', `Batching ${totalSegments} segments (${Math.ceil(totalSegments / SEGMENTS_PER_BATCH)} batches)...`);
-        return await this.generateSegmentsBatched(contextData, storyId, progressManager, parentTaskId);
-      }
-      
-      // Single batch generation for smaller stories
-      progressManager?.updateTask(parentTaskId, 'running', `Generating ${totalSegments} segments in one batch...`);
+      // 1. Ensure Assistant with stable instructions
+      const assistantId = await this.ensureAssistant();
+      this.errorLogger.logInfo(storyId, `✓ Using assistant: ${assistantId}`);
+      progressManager?.updateTask(parentTaskId, 'running', 'Assistant ready');
 
-      // Get or create assistant
-      const assistantId = await this.getOrCreateAssistant();
-      this.errorLogger.logInfo(storyId, `Using assistant: ${assistantId}`);
-      progressManager?.updateTask(parentTaskId, 'running', `Using AI assistant: ${assistantId}`);
+      // 2. Create thread for this story (reused across batches)
+      const threadId = await this.createStoryThread(storyId);
+      this.errorLogger.logInfo(storyId, `✓ Thread created: ${threadId}`);
 
-      // Create simple thread (no file_search)
-      const thread = await this.openai.beta.threads.create({});
-      this.errorLogger.logInfo(storyId, `Created thread: ${thread.id}`);
-
-      // Build a compact inline context: exclude heavy fields (timingMap, audioAnalysis)
-      const parsed: any = contextData;
-      const inlineContext: any = {
-        storyId: parsed.storyId,
-        storyName: parsed.storyName,
-        storyDescription: parsed.storyDescription,
-        storyContent: parsed.storyContent,
-        transcription: parsed.transcription,
-        research: parsed.research,
-        storyAssets: parsed.storyAssets,
-        cinematographyGuidelines: parsed.cinematographyGuidelines,
-        generationInstructions: parsed.generationInstructions,
-        segments: parsed.segments,
-        editorsNotes: parsed.editorsNotes
-      };
-      // Safety: trim excessively long research text to keep payload under limits
-      if (inlineContext.research && typeof inlineContext.research === 'string' && inlineContext.research.length > 120000) {
-        inlineContext.research = inlineContext.research.slice(0, 120000);
-      }
-      const compactJson = JSON.stringify(inlineContext);
-      const prompt = this.buildInlinePrompt(compactJson);
-      this.errorLogger.logInfo(storyId, `Sending inline prompt to AI (length: ${prompt.length} chars)`);
-      progressManager?.updateTask(parentTaskId, 'running', 'Sending context to AI...');
-      await this.openai.beta.threads.messages.create(thread.id, {
-        role: 'user',
-        content: prompt
-      });
-
-      // Run with only the function tool and forced tool_choice
-      this.errorLogger.logInfo(storyId, `Starting run with assistant: ${assistantId}`);
-      const run = await this.openai.beta.threads.runs.create(thread.id, {
-        assistant_id: assistantId,
-        tools: [AssistantsAPIOneShotGenerator.GENERATE_SEGMENTS_TOOL],
-        tool_choice: { type: 'function', function: { name: 'generateSegments' } },
-        max_completion_tokens: 32768  // Increase output limit to support stories with many segments
-      });
-      this.errorLogger.logInfo(storyId, `Run created: ${run.id}, status: ${run.status}`);
-
-      // Wait for completion
-      this.errorLogger.logInfo(storyId, `Waiting for run completion...`);
-      progressManager?.updateTask(parentTaskId, 'running', 'Waiting for AI response...');
-      const completedRun = await this.waitForCompletion(thread.id, run.id, storyId);
-      this.errorLogger.logInfo(storyId, `Run completed with status: ${completedRun.status}`);
-
-      // Parse response
-      const aiSegments = await this.parseSegmentResponse(completedRun, thread.id, storyId);
-      progressManager?.updateTask(parentTaskId, 'running', `Received ${aiSegments.length} AI-generated prompts`);
-
-      // Check segment count vs expected
-      const expected = Array.isArray(contextData.segments) ? contextData.segments.length : undefined;
-      if (expected && aiSegments.length !== expected) {
-        this.errorLogger.logCritical(storyId, `Segment count mismatch: expected ${expected}, got ${aiSegments.length}`);
+      // 3. Load continuity state
+      const storyDir = path.dirname(contextFilePath);
+      const continuityStatePath = path.join(storyDir, `${storyId}.continuity.json`);
+      let priorState: ContinuityState | undefined;
+      if (fs.existsSync(continuityStatePath)) {
+        priorState = JSON.parse(fs.readFileSync(continuityStatePath, 'utf8'));
+        this.errorLogger.logInfo(storyId, `✓ Loaded continuity state (${Object.keys(priorState?.lastSeenCharacter || {}).length} characters tracked)`);
       }
 
-      // Create Map of segment pairs
-      const segmentMap = new Map<string, SegmentPair>();
-      const originalSegments = contextData.segments || [];
+      // 4. Load character profiles
+      const characterProfiles = loadCharacterProfiles(contextData.storyAssets || []);
+      const linter = new ContinuityLinter(characterProfiles);
+      this.errorLogger.logInfo(storyId, `✓ Loaded ${Object.keys(characterProfiles).length} character profiles`);
 
-      this.errorLogger.logInfo(storyId, `Creating segment pair map...`);
-      progressManager?.updateTask(parentTaskId, 'running', 'Pairing AI segments with original metadata...');
+      // 5. Process in batches
+      const BATCH_SIZE = 20;
+      const allSegments = contextData.segments || [];
+      const totalSegments = allSegments.length;
+      const numBatches = Math.ceil(totalSegments / BATCH_SIZE);
+      const allResults: any[] = [];
 
-      for (let i = 0; i < aiSegments.length; i++) {
-        const aiSegment = aiSegments[i];
-        
-        // Find matching original segment by ID
-        const contextSegment = originalSegments.find((seg: any) => seg.id === aiSegment.segmentId);
-        
-        if (!contextSegment) {
-          this.errorLogger.logWarning(storyId, `No context segment found for AI segment ${i + 1}`);
-          continue;
-        }
-        
-        const segmentId = `segment_${i + 1}`;
-        segmentMap.set(segmentId, {
-          aiSegment,
-          contextSegment
+      this.errorLogger.logInfo(storyId, `📦 Processing ${totalSegments} segments in ${numBatches} batches`);
+      progressManager?.updateTask(parentTaskId, 'running', `Processing ${numBatches} batches...`);
+
+      for (let batchStart = 0; batchStart < totalSegments; batchStart += BATCH_SIZE) {
+        const batchEnd = Math.min(batchStart + BATCH_SIZE, totalSegments);
+        const batchSegments = allSegments.slice(batchStart, batchEnd);
+        const batchIndex = Math.floor(batchStart / BATCH_SIZE);
+
+        this.errorLogger.logInfo(storyId, `\n📦 Batch ${batchIndex + 1}/${numBatches}: segments ${batchStart + 1}-${batchEnd}`);
+        progressManager?.updateTask(parentTaskId, 'running', `Batch ${batchIndex + 1}/${numBatches}: Generating...`);
+
+        // a. Extract segment info (characters, location, storylineId)
+        const segmentsWithChars = batchSegments.map((seg: any, idx: number) => ({
+          id: seg.id,
+          index: batchStart + idx,
+          storylineId: seg.storylineId || seg.narrativeContext?.storylineId,
+          characters: seg.narrativeContext?.characterFocus || [],
+          location: seg.narrativeContext?.locationContinuity
+        }));
+
+        // b. Compute continuity (host-side, deterministic)
+        const { continuityMap, finalState } = buildContinuityMap(
+          segmentsWithChars,
+          contextData.storyAssets || [],
+          characterProfiles,
+          priorState
+        );
+        this.errorLogger.logInfo(storyId, `  ✓ Computed continuity for ${Object.keys(continuityMap).length} segments`);
+
+        // c. Build batch brief (summary of previous batch)
+        const batchBrief = batchIndex > 0
+          ? this.summarizePreviousBatch(allResults.slice(-BATCH_SIZE))
+          : undefined;
+
+        // d. Inject continuity into segments
+        const segmentsWithContinuity = batchSegments.map((seg: any, idx: number) => {
+          const refs = continuityMap[seg.id];
+          return { ...seg, segmentIndex: batchStart + idx, ...refs };
         });
-        
-        this.errorLogger.logInfo(storyId, `Paired segment ${i + 1}: "${contextSegment.text}" (${contextSegment.duration}s)`);
-        progressManager?.updateTask(parentTaskId, 'running', `Paired segment ${i + 1}/${aiSegments.length}...`);
-      }
 
-      this.errorLogger.logInfo(storyId, `Created ${segmentMap.size} segment pairs`);
+        // e. Build batch context
+        const batchContext = {
+          storyId: contextData.storyId,
+          storyName: contextData.storyName,
+          storyAssets: contextData.storyAssets,
+          visualStyle: contextData.generationInstructions?.visualStyle,
+          segments: segmentsWithContinuity
+        };
+
+        // f. Post batch memo + context to thread
+        const batchMemo = this.buildBatchMemo(
+          batchIndex,
+          batchSegments.map((s: any) => s.id),
+          batchBrief
+        );
+
+        await this.openai.beta.threads.messages.create(threadId, {
+          role: 'user',
+          content: [
+            { type: 'text', text: batchMemo },
+            { type: 'text', text: `<BATCH_CONTEXT>\n${JSON.stringify(batchContext, null, 2)}\n</BATCH_CONTEXT>` }
+          ]
+        });
+
+        // g. Create run
+        const run = await this.openai.beta.threads.runs.create(threadId, {
+          assistant_id: assistantId,
+          tool_choice: { type: 'function', function: { name: 'generateSegments' } },
+          max_completion_tokens: 16384,
+          instructions: batchIndex > 0
+            ? 'Maintain consistency with prior batch. No trait repetition.'
+            : 'First batch: establish visual foundation and tone.'
+        });
+
+        // h. Wait specifically for requires_action
+        this.errorLogger.logInfo(storyId, `  ⏳ Waiting for AI response...`);
+        const raRun = await this.waitUntilRunState(threadId, run.id, ['requires_action']);
+        
+        // i. Extract tool call args (while run is in requires_action)
+        const structuredFields = await this.parseSegmentResponse(raRun, threadId, storyId);
+        this.errorLogger.logInfo(storyId, `  ✓ Received ${structuredFields.length} structured field sets`);
+        this.errorLogger.logInfo(storyId, `  DEBUG: First segment structure: ${JSON.stringify(structuredFields[0], null, 2).substring(0, 500)}`);
+        
+        // j. Submit tool outputs and wait for completed to free the thread
+        this.errorLogger.logInfo(storyId, `  ✓ Submitting tool outputs to complete run ${run.id}...`);
+        const toolCalls = raRun.required_action?.submit_tool_outputs?.tool_calls ?? [];
+        this.errorLogger.logInfo(storyId, `  DEBUG: Found ${toolCalls.length} tool calls to submit outputs for`);
+        await this.openai.beta.threads.runs.submitToolOutputs(
+          run.id,
+          {
+            thread_id: threadId,
+            tool_outputs: toolCalls.map((tc: any) => ({
+              tool_call_id: tc.id,
+              output: 'ok'
+            }))
+          }
+        );
+        
+        // k. Wait for run to complete before touching thread again
+        await this.waitUntilRunState(threadId, run.id, ['completed']);
+        this.errorLogger.logInfo(storyId, `  ✓ Run ${run.id} completed, thread is free`);
+        
+        // l. Run critic pass
+        const critiqued = await this.runCriticPass(structuredFields, batchContext);
+        this.errorLogger.logInfo(storyId, `  ✓ Critic pass complete`);
+
+        // m. Fuse fields → finalPrompt
+        const fused = critiqued.map((seg: any) => {
+          this.errorLogger.logInfo(storyId, `  DEBUG: Fusing segment ${seg.segmentId}, has structuredFields: ${!!seg.structuredFields}`);
+          if (seg.structuredFields) {
+            this.errorLogger.logInfo(storyId, `  DEBUG: structuredFields keys: ${Object.keys(seg.structuredFields).join(', ')}`);
+          }
+          const finalPrompt = this.fusePrompt(seg.structuredFields || {}, seg);
+          this.errorLogger.logInfo(storyId, `  DEBUG: Fused prompt for ${seg.segmentId}: "${finalPrompt}" (length: ${finalPrompt?.length || 0})`);
+          return { ...seg, finalPrompt };
+        });
+        this.errorLogger.logInfo(storyId, `  ✓ Fused structured fields`);
+
+        // n. Lint (n-gram + continuity + length)
+        const recentPrompts = priorState?.recentPrompts || [];
+        const linted = fused.map((seg: any) => {
+          this.errorLogger.logInfo(storyId, `  DEBUG: Linting segment ${seg.segmentId}, finalPrompt: "${seg.finalPrompt}"`);
+          const lintResult = linter.lintSegment(seg);
+          const ngramOverlap = isTooSimilar(seg.finalPrompt, recentPrompts, 4, 0.25)
+            ? findSimilarSegment(seg.finalPrompt, recentPrompts, 4)?.overlap || 0
+            : 0;
+          const result = {
+            ...seg,
+            driftFlags: lintResult.driftFlags,
+            criticFlags: lintResult.fillerFlags,
+            ngramOverlap,
+            violations: lintResult.allFlags.length > 0 ? lintResult.allFlags : undefined
+          };
+          this.errorLogger.logInfo(storyId, `  DEBUG: After linting ${seg.segmentId}, finalPrompt still: "${result.finalPrompt}"`);
+          return result;
+        });
+
+        // o. Compress if >80 words
+        const compressed = await Promise.all(
+          linted.map(async (seg: any) => {
+            try {
+              // Check if finalPrompt exists (it might not if using structured fields only)
+              this.errorLogger.logInfo(storyId, `  DEBUG: Compression check for ${seg.segmentId}, finalPrompt exists: ${!!seg.finalPrompt}, type: ${typeof seg.finalPrompt}, value: "${seg.finalPrompt}"`);
+              
+              if (!seg.finalPrompt) {
+                this.errorLogger.logWarning(storyId, `  WARNING: Segment ${seg.segmentId} has no finalPrompt, skipping compression`);
+                return seg;
+              }
+              
+              const wordCount = seg.finalPrompt.split(/\s+/).length;
+              if (wordCount > 80) {
+                const compressedPrompt = await this.compressPrompt(seg.finalPrompt, 75);
+                this.errorLogger.logInfo(storyId, `    🗜️  Compressed segment ${seg.segmentId}: ${wordCount}w → ${compressedPrompt.split(/\s+/).length}w`);
+                return { ...seg, finalPrompt: compressedPrompt, compressed: true };
+              }
+              return seg;
+            } catch (error) {
+              this.errorLogger.logError({
+                storyId,
+                errorType: 'generation_failure',
+                severity: 'critical',
+                message: `Error compressing segment ${seg.segmentId}: ${error instanceof Error ? error.message : String(error)}`,
+                context: {
+                  segmentId: seg.segmentId,
+                  hasFinalPrompt: !!seg.finalPrompt,
+                  finalPromptType: typeof seg.finalPrompt,
+                  finalPromptValue: String(seg.finalPrompt)
+                },
+                stackTrace: error instanceof Error ? error.stack : undefined
+              });
+              throw error;
+            }
+          })
+        );
+
+        // m. Validate & patch with host refs (host is source of truth)
+        const validated = this.validateAndPatchContinuity(
+          compressed,
+          continuityMap,
+          contextData.storyAssets,
+          linter
+        );
+        this.errorLogger.logInfo(storyId, `  ✓ Validated and patched continuity`);
+
+        allResults.push(...validated);
+
+        // n. Save continuity state for next batch
+        priorState = {
+          ...finalState,
+          recentPrompts: [
+            ...validated.map((s: any) => s.finalPrompt),
+            ...(priorState?.recentPrompts || [])
+          ].slice(0, 8)
+        };
+        fs.writeFileSync(continuityStatePath, JSON.stringify(priorState, null, 2));
+
+        // o. Emit comprehensive batch metrics
+        const batchMetrics = this.computeBatchMetrics(validated);
+        this.errorLogger.logInfo(storyId,
+          `  📊 Metrics: ${(batchMetrics.cleanRate * 100).toFixed(1)}% clean, ` +
+          `overlap ${batchMetrics.avgNgramOverlap.toFixed(3)}, ` +
+          `${batchMetrics.compressedCount} compressed, ` +
+          `drift ${batchMetrics.driftCount}, critic ${batchMetrics.criticCount}`
+        );
+        this.errorLogger.logInfo(storyId,
+          `     Scores: redundancy ${batchMetrics.avgRedundancyScore.toFixed(2)}, ` +
+          `novelty ${batchMetrics.avgNoveltyScore.toFixed(2)}, ` +
+          `continuity ${batchMetrics.avgContinuityConfidence.toFixed(2)}`
+        );
+        progressManager?.updateTask(parentTaskId, 'running', `Batch ${batchIndex + 1}/${numBatches}: ${(batchMetrics.cleanRate * 100).toFixed(0)}% clean`);
+      }
 
       // Cleanup thread
       try {
-        await this.openai.beta.threads.delete(thread.id);
+        await this.openai.beta.threads.delete(threadId);
       } catch {}
 
-      this.errorLogger.logInfo(storyId, `Generated ${segmentMap.size} segment pairs successfully`);
-      return segmentMap;
+      this.errorLogger.logInfo(storyId, `\n✅ Generated ${allResults.length} segments successfully`);
+      progressManager?.updateTask(parentTaskId, 'running', `Generated ${allResults.length} segments`);
+      
+      return this.convertToSegmentPairs(allResults);
 
     } catch (error) {
-      this.errorLogger.logApiError(storyId, `Script genration failed: ${error instanceof Error ? error.message : String(error)}`, {
-        contextFilePath,
-        error: error instanceof Error ? error.toString() : String(error)
-      });
+      this.errorLogger.logApiError(
+        storyId, 
+        `❌ Script generation failed: ${error instanceof Error ? error.message : String(error)}`, 
+        {
+          contextFilePath,
+          error: error instanceof Error ? error.toString() : String(error)
+        },
+        error instanceof Error ? error : undefined
+      );
       throw error;
     }
-  }
-  
-  /**
-   * Generate segments in batches for long stories (>35 segments)
-   */
-  private async generateSegmentsBatched(
-    contextData: any,
-    storyId: string,
-    progressManager?: any,
-    parentTaskId?: string
-  ): Promise<Map<string, SegmentPair>> {
-    const SEGMENTS_PER_BATCH = 35;
-    const allSegments = contextData.segments || [];
-    const totalSegments = allSegments.length;
-    const numBatches = Math.ceil(totalSegments / SEGMENTS_PER_BATCH);
-    
-    this.errorLogger.logInfo(storyId, `Batching ${totalSegments} segments into ${numBatches} batches of ${SEGMENTS_PER_BATCH}`);
-    
-    const allAiSegments: SegmentPrompt[] = [];
-    const assistantId = await this.getOrCreateAssistant();
-    
-    // Process each batch
-    for (let batchIndex = 0; batchIndex < numBatches; batchIndex++) {
-      const startIdx = batchIndex * SEGMENTS_PER_BATCH;
-      const endIdx = Math.min(startIdx + SEGMENTS_PER_BATCH, totalSegments);
-      const batchSegments = allSegments.slice(startIdx, endIdx);
-      
-      this.errorLogger.logInfo(storyId, `Processing batch ${batchIndex + 1}/${numBatches} (segments ${startIdx + 1}-${endIdx})`);
-      progressManager?.updateTask(parentTaskId, 'running', `Batch ${batchIndex + 1}/${numBatches}: Generating segments ${startIdx + 1}-${endIdx}...`);
-      
-      // Create thread for this batch
-      const thread = await this.openai.beta.threads.create({});
-      
-      try {
-        // Build context with only this batch's segments
-        const batchContext = {
-          ...contextData,
-          segments: batchSegments
-        };
-        
-        // Safety: trim research if too long
-        if (batchContext.research && typeof batchContext.research === 'string' && batchContext.research.length > 120000) {
-          batchContext.research = batchContext.research.slice(0, 120000);
-        }
-        
-        const compactJson = JSON.stringify(batchContext);
-        const prompt = this.buildInlinePrompt(compactJson);
-        
-        await this.openai.beta.threads.messages.create(thread.id, {
-          role: 'user',
-          content: prompt
-        });
-        
-        // Run assistant
-        const run = await this.openai.beta.threads.runs.create(thread.id, {
-          assistant_id: assistantId,
-          tools: [AssistantsAPIOneShotGenerator.GENERATE_SEGMENTS_TOOL],
-          tool_choice: { type: 'function', function: { name: 'generateSegments' } },
-          max_completion_tokens: 32768
-        });
-        
-        // Wait for completion
-        const completedRun = await this.waitForCompletion(thread.id, run.id, storyId);
-        
-        // Parse batch response
-        const batchAiSegments = await this.parseSegmentResponse(completedRun, thread.id, storyId);
-        this.errorLogger.logInfo(storyId, `Batch ${batchIndex + 1} generated ${batchAiSegments.length} segments`);
-        
-        // Add to results
-        allAiSegments.push(...batchAiSegments);
-        
-        progressManager?.updateTask(parentTaskId, 'running', `Batch ${batchIndex + 1}/${numBatches} complete (${allAiSegments.length}/${totalSegments} total)`);
-        
-      } finally {
-        // Cleanup thread
-        try {
-          await this.openai.beta.threads.delete(thread.id);
-        } catch {}
-      }
-    }
-    
-    // Check total count
-    if (allAiSegments.length !== totalSegments) {
-      this.errorLogger.logCritical(storyId, `Batch mismatch: expected ${totalSegments}, got ${allAiSegments.length}`);
-    }
-    
-    // Create segment map
-    const segmentMap = new Map<string, SegmentPair>();
-    
-    for (let i = 0; i < allAiSegments.length; i++) {
-      const aiSegment = allAiSegments[i];
-      const contextSegment = allSegments.find((seg: any) => seg.id === aiSegment.segmentId);
-      
-      if (!contextSegment) {
-        this.errorLogger.logWarning(storyId, `No context segment found for AI segment ${i + 1}`);
-        continue;
-      }
-      
-      const segmentId = `segment_${i + 1}`;
-      segmentMap.set(segmentId, {
-        aiSegment,
-        contextSegment
-      });
-    }
-    
-    this.errorLogger.logInfo(storyId, `Batched generation complete: ${segmentMap.size} segment pairs`);
-    return segmentMap;
   }
   
   /**
@@ -663,7 +1301,7 @@ This ensures visual consistency when characters/locations reappear after multipl
 **Target:** 50-80 words per segment
 
 📝 EDITOR'S GUIDANCE:
-If context.editorsNotes is provided, incorporate the guidance into your prompts:
+If context.editorsNotes is provided, incorporate the guidance into your prompts and make it a priority. Do not ignore it.
 - Research Guidance: Focus on specified research areas
 - Script Guidance: Follow specific narrative directions  
 - Visual Style: Apply specified visual preferences
@@ -721,32 +1359,27 @@ ${contextJson}
     throw new Error(`Assistant run timed out after ${timeoutSeconds} seconds`);
   }
   
+  
   /**
-   * Wait for vector store file processing
+   * Wait for run to reach one of the target states
    */
-  private async waitForVectorStoreReady(vectorStoreId: string, storyId: string): Promise<void> {
-    let attempts = 0;
-    const maxAttempts = 30; // 30 seconds max
-    
-    while (attempts < maxAttempts) {
-      const vectorStore = await this.openai.vectorStores.retrieve(vectorStoreId);
-      
-      if (vectorStore.status === 'completed') {
-        this.errorLogger.logInfo(storyId, 'Vector store ready');
-        return;
+  private async waitUntilRunState(
+    threadId: string,
+    runId: string,
+    targets: Array<'completed' | 'cancelled' | 'failed' | 'expired' | 'requires_action'>,
+    timeoutMs = 120000
+  ): Promise<any> {
+    const started = Date.now();
+    while (true) {
+      const run = await this.openai.beta.threads.runs.retrieve(runId, { thread_id: threadId });
+      if (targets.includes(run.status as any)) {
+        return run;
       }
-      
-      // Accept intermediate states and keep waiting
-      if (['failed', 'expired'].includes(vectorStore.status)) {
-        throw new Error(`Vector store ${vectorStore.status}`);
+      if (Date.now() - started > timeoutMs) {
+        throw new Error(`Run ${runId} did not reach ${targets.join('|')} within ${timeoutMs}ms (last=${run.status})`);
       }
-      
-      // Otherwise status is queued or in_progress - keep waiting
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      attempts++;
+      await new Promise(r => setTimeout(r, 500));
     }
-    
-    throw new Error('Vector store processing timed out');
   }
   
   /**
@@ -806,13 +1439,6 @@ ${contextJson}
         
         this.errorLogger.logInfo(storyId, `Function call result: ${JSON.stringify(args, null, 2).substring(0, 1000)}...`);
         
-        // Cancel run for tidiness since we don't need to submit outputs
-        try { 
-          await this.openai.beta.threads.runs.cancel(threadId, run.id); 
-        } catch {
-          // Ignore cancel errors
-        }
-        
         if (!args.segments || !Array.isArray(args.segments)) {
           throw new Error('Invalid function call response: missing segments array');
         }
@@ -827,7 +1453,14 @@ ${contextJson}
         for (const segment of args.segments) {
           // Accept both 'segmentId' and 'id' field names
           const segmentId = segment.segmentId || segment.id;
-          if (!segmentId || !segment.finalPrompt) {
+          
+          // New system: AI generates structuredFields, host fuses them later
+          // Old system: AI generates finalPrompt directly
+          const hasStructuredFields = segment.structuredFields && 
+                                      (segment.structuredFields.actions || segment.structuredFields.shot);
+          const hasFinalPrompt = segment.finalPrompt;
+          
+          if (!segmentId || (!hasStructuredFields && !hasFinalPrompt)) {
             throw new Error(`Invalid segment format: ${JSON.stringify(segment)}`);
           }
           
@@ -837,13 +1470,15 @@ ${contextJson}
             delete segment.id; // Remove the old 'id' field
           }
           
-          // Validate token budget (400 tokens max)
-          const tokenCount = this.estimateTokenCount(segment.finalPrompt);
-          if (tokenCount > 400) {
-            this.errorLogger.logWarning(storyId, 
-              `Segment ${segment.segmentId} exceeds token budget: ${tokenCount} tokens`,
-              { segmentId: segment.segmentId, tokenCount, prompt: segment.finalPrompt.substring(0, 100) + '...' }
-            );
+          // Validate token budget only if finalPrompt exists (400 tokens max)
+          if (segment.finalPrompt) {
+            const tokenCount = this.estimateTokenCount(segment.finalPrompt);
+            if (tokenCount > 400) {
+              this.errorLogger.logWarning(storyId, 
+                `Segment ${segment.segmentId} exceeds token budget: ${tokenCount} tokens`,
+                { segmentId: segment.segmentId, tokenCount, prompt: segment.finalPrompt.substring(0, 100) + '...' }
+              );
+            }
           }
         }
         
@@ -868,11 +1503,16 @@ ${contextJson}
       }
       
     } catch (error) {
-      this.errorLogger.logApiError(storyId, `Failed to parse segment response: ${error instanceof Error ? error.message : String(error)}`, {
-        runStatus: run.status,
-        runId: run.id,
-        hasRequiredAction: !!run.required_action
-      });
+      this.errorLogger.logApiError(
+        storyId, 
+        `Failed to parse segment response: ${error instanceof Error ? error.message : String(error)}`, 
+        {
+          runStatus: run.status,
+          runId: run.id,
+          hasRequiredAction: !!run.required_action
+        },
+        error instanceof Error ? error : undefined
+      );
       throw new Error(`Failed to parse segment response: ${error instanceof Error ? error.message : String(error)}`);
     }
   }

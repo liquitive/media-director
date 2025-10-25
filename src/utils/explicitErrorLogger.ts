@@ -76,26 +76,28 @@ export class ExplicitErrorLogger {
   /**
    * Log critical error
    */
-  logCritical(storyId: string, message: string, context?: Record<string, any>): void {
+  logCritical(storyId: string, message: string, context?: Record<string, any>, error?: Error): void {
     this.logError({
       storyId,
       errorType: 'generation_failure',
       severity: 'critical',
       message,
-      context: context || {}
+      context: context || {},
+      stackTrace: error?.stack
     });
   }
   
   /**
    * Log API error
    */
-  logApiError(storyId: string, message: string, context?: Record<string, any>): void {
+  logApiError(storyId: string, message: string, context?: Record<string, any>, error?: Error): void {
     this.logError({
       storyId,
       errorType: 'api_error',
       severity: 'critical',
       message,
-      context: context || {}
+      context: context || {},
+      stackTrace: error?.stack
     });
   }
   

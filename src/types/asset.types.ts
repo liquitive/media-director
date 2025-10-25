@@ -148,8 +148,40 @@ export interface MasterContextFile {
 
 export interface SegmentPrompt {
   segmentId: string;
+  segmentIndex?: number;
   finalPrompt: string;
-  // Cross-segment continuity
+  
+  // NEW: Structured fields (model outputs these before fusion)
+  structuredFields?: {
+    actions?: string[];
+    shot?: string;
+    lighting?: string;
+    environment_delta?: string;
+    props_delta?: string;
+    redundancy_score?: number;
+    novelty_score?: number;
+    continuity_confidence?: number;
+    forbidden_traits_used?: string[];
+  };
+  
+  // NEW: Host-computed continuity
+  characters?: string[];
+  location?: string;
+  storylineId?: string;
+  continuityRefsByCharacter?: Record<string, string>;
+  locationRef?: string;
+  firstAppearanceByCharacter?: string[];
+  appearanceByCharacter?: Record<string, string>;
+  identityLocklineByCharacter?: Record<string, string>;
+  
+  // QA
+  violations?: string[];
+  driftFlags?: string[];
+  criticFlags?: string[];
+  ngramOverlap?: number;
+  compressed?: boolean;
+  
+  // Legacy fields (backward compat)
   continuityReference?: string;
   continuityType?: 'sequential' | 'narrative' | 'character' | 'location' | 'none';
   narrativeContext?: {
@@ -182,6 +214,37 @@ export interface ValidationResult {
     warnings: number;
     overallQuality: 'excellent' | 'good' | 'fair' | 'poor';
   };
+}
+
+/**
+ * Continuity state for cross-batch persistence
+ */
+export interface ContinuityState {
+  storyId: string;
+  lastSeenCharacter: Record<string, { segmentId: string; segmentIndex: number; storylineId?: string }>;
+  lastSeenLocation: Record<string, { segmentId: string; segmentIndex: number; storylineId?: string }>;
+  lastBatchId: string;
+  recentPrompts: string[];  // Rolling window for n-gram check
+  usedCameraMoves: string[];
+  updatedAt: string;
+}
+
+/**
+ * Batch context (minimal) for per-batch generation
+ */
+export interface BatchContext {
+  batchId: string;
+  batchIndex: number;
+  segmentIds: string[];
+  
+  // Minimal context for this batch
+  identityLocklines: Record<string, string>;
+  continuityMap: Record<string, any>;
+  batchBrief: string[];  // 6-10 bullets of what prior batch accomplished
+  
+  // Constraints
+  usedCameraMoves: Set<string>;  // Camera verbs used in batch
+  recentPrompts: string[];       // Last 5-8 for n-gram check
 }
 
 

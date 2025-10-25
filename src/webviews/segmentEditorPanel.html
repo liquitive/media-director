@@ -206,20 +206,6 @@
             opacity: 0.8;
         }
 
-        .segment-selector {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            margin-bottom: 20px;
-            padding: 10px;
-            background: var(--vscode-panel-background);
-            border-radius: 6px;
-        }
-
-        .segment-selector select {
-            flex: 1;
-        }
-
         .continuity-badge {
             display: inline-block;
             padding: 2px 8px;
@@ -248,6 +234,81 @@
             background-color: rgba(255, 193, 7, 0.2);
             color: #ffc107;
         }
+
+        /* Collapsible Section Styles */
+        .collapsible-section {
+            margin-bottom: 15px;
+            background: var(--vscode-panel-background);
+            border-radius: 6px;
+            border: 1px solid var(--vscode-panel-border);
+        }
+
+        .collapsible-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 15px;
+            cursor: pointer;
+            user-select: none;
+            transition: background-color 0.2s ease;
+        }
+
+        .collapsible-header:hover {
+            background-color: rgba(0, 0, 0, 0.05);
+        }
+
+        .collapsible-header h3 {
+            margin: 0;
+            font-size: 13px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .collapsible-toggle {
+            font-size: 12px;
+            opacity: 0.6;
+            transition: transform 0.2s ease;
+        }
+
+        .collapsible-toggle.expanded {
+            transform: rotate(90deg);
+        }
+
+        .collapsible-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+        }
+
+        .collapsible-content.expanded {
+            max-height: 800px;
+            padding: 15px;
+            border-top: 1px solid var(--vscode-panel-border);
+        }
+
+        .readonly-metadata {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            font-size: 12px;
+        }
+
+        .readonly-metadata .metadata-item {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .readonly-metadata .metadata-label {
+            opacity: 0.6;
+            font-size: 11px;
+        }
+
+        .readonly-metadata .metadata-value {
+            font-weight: 500;
+        }
     </style>
 </head>
 <body>
@@ -256,54 +317,47 @@
             🎬 Segment Editor
             <span class="segment-badge" id="segmentBadge">Segment 1</span>
         </h1>
-        <div class="readonly-info">
-            <strong>Read-only fields:</strong> version, storyId, segmentIndex, createdAt, id, text, status
-        </div>
-
-        <!-- Segment Selector -->
-        <div class="segment-selector">
-            <label for="segmentSelector"><strong>Current Segment:</strong></label>
-            <select id="segmentSelector">
-                <!-- Populated dynamically -->
-            </select>
-        </div>
         
-        <!-- Read-only Information -->
-        <div class="section">
-            <h3>📋 Segment Information (Read-only)</h3>
-            <div class="grid-2">
-                <div class="form-group">
-                    <label>Segment ID</label>
-                    <div class="readonly-field" id="segmentId">-</div>
-                </div>
-                <div class="form-group">
-                    <label>Status</label>
-                    <div class="readonly-field" id="status">-</div>
-                </div>
+        <!-- Read-only Information (Collapsible) -->
+        <div class="collapsible-section">
+            <div class="collapsible-header" onclick="toggleCollapsible(this)">
+                <h3>
+                    <span class="collapsible-toggle">▶</span>
+                    📋 Segment Metadata (read-only)
+                </h3>
+                <span style="font-size: 11px; opacity: 0.6;">Click to expand</span>
             </div>
-            <div class="grid-2">
-                <div class="form-group">
-                    <label>Story ID</label>
-                    <div class="readonly-field" id="storyId">-</div>
+            <div class="collapsible-content">
+                <div class="readonly-metadata">
+                    <div class="metadata-item">
+                        <span class="metadata-label">Segment ID</span>
+                        <span class="metadata-value" id="segmentId">-</span>
+                    </div>
+                    <div class="metadata-item">
+                        <span class="metadata-label">Status</span>
+                        <span class="metadata-value" id="status">-</span>
+                    </div>
+                    <div class="metadata-item">
+                        <span class="metadata-label">Version</span>
+                        <span class="metadata-value" id="version">-</span>
+                    </div>
+                    <div class="metadata-item">
+                        <span class="metadata-label">Story ID</span>
+                        <span class="metadata-value" id="storyId">-</span>
+                    </div>
+                    <div class="metadata-item">
+                        <span class="metadata-label">Segment Index</span>
+                        <span class="metadata-value" id="segmentIndex">-</span>
+                    </div>
+                    <div class="metadata-item">
+                        <span class="metadata-label">Created At</span>
+                        <span class="metadata-value" id="createdAt">-</span>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label>Segment Index</label>
-                    <div class="readonly-field" id="segmentIndex">-</div>
+                <div class="form-group" style="margin-top: 15px; margin-bottom: 0;">
+                    <label style="font-size: 11px; opacity: 0.6;">Text/Narration (from audio transcript)</label>
+                    <div class="readonly-field" id="text" style="max-height: 100px; overflow-y: auto;">-</div>
                 </div>
-            </div>
-            <div class="grid-2">
-                <div class="form-group">
-                    <label>Created At</label>
-                    <div class="readonly-field" id="createdAt">-</div>
-                </div>
-                <div class="form-group">
-                    <label>Version</label>
-                    <div class="readonly-field" id="version">-</div>
-                </div>
-            </div>
-            <div class="form-group">
-                <label>Text/Narration (from audio transcript)</label>
-                <div class="readonly-field" id="text">-</div>
             </div>
         </div>
 
@@ -436,29 +490,28 @@
         let originalSegmentData = null;
         let allSegments = [];
         
+        // Toggle collapsible sections
+        function toggleCollapsible(headerElement) {
+            const toggle = headerElement.querySelector('.collapsible-toggle');
+            const content = headerElement.nextElementSibling;
+            
+            if (content.classList.contains('expanded')) {
+                content.classList.remove('expanded');
+                toggle.classList.remove('expanded');
+            } else {
+                content.classList.add('expanded');
+                toggle.classList.add('expanded');
+            }
+        }
+        
         // Load segment data when page loads
         window.addEventListener('load', () => {
             loadSegment();
         });
-
-        // Handle segment selector change
-        document.getElementById('segmentSelector').addEventListener('change', (e) => {
-            const selectedIndex = parseInt(e.target.value);
-            if (!isNaN(selectedIndex)) {
-                vscode.postMessage({
-                    command: 'loadSegment',
-                    segmentIndex: selectedIndex
-                });
-            }
-        });
         
         function loadSegment() {
-            const selector = document.getElementById('segmentSelector');
-            const selectedIndex = selector.value ? parseInt(selector.value) : undefined;
-            
             vscode.postMessage({
-                command: 'loadSegment',
-                segmentIndex: selectedIndex
+                command: 'loadSegment'
             });
         }
         
@@ -611,15 +664,6 @@
                 : '';
         }
 
-        function populateSegmentSelector(segments, currentIndex) {
-            allSegments = segments;
-            const selector = document.getElementById('segmentSelector');
-            selector.innerHTML = segments.map((seg, idx) => {
-                const label = `Segment ${idx + 1} - ${seg.id || seg.text?.substring(0, 30) || 'Untitled'}`;
-                return `<option value="${idx}" ${idx === currentIndex ? 'selected' : ''}>${label}</option>`;
-            }).join('');
-        }
-
         function populateContinuitySelector(segments, currentIndex) {
             const selector = document.getElementById('continuityReference');
             const currentOptions = Array.from(selector.options).map(opt => opt.value);
@@ -644,9 +688,8 @@
                     if (message.segment) {
                         populateFields(message.segment);
                         
-                        // Populate selectors if we have all segments
+                        // Populate continuity selector if we have all segments
                         if (message.allSegments) {
-                            populateSegmentSelector(message.allSegments, message.segment.segmentIndex || 0);
                             populateContinuitySelector(message.allSegments, message.segment.segmentIndex || 0);
                         }
                     } else {
@@ -668,5 +711,3 @@
     </script>
 </body>
 </html>
-
-

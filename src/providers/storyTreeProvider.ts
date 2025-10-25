@@ -845,18 +845,12 @@ export class StoryTreeItem extends vscode.TreeItem {
                 break;
             
             case 'segment':
-                // Clicking segment opens segment editor
-                if (this.segment && this.story?.id) {
-                    // Open the segment JSON file directly with the custom editor
-                    const segmentPath = path.join(
-                        this.storyService.getStoryDirectory(this.story.id),
-                        'segments',
-                        `segment_${(this.segmentIndex || 0) + 1}.json`
-                    );
+                // Clicking segment opens segment editor panel
+                if (this.segment && this.story?.id && this.segmentIndex !== undefined) {
                     return {
-                        command: 'sora.openSegmentFile',
+                        command: 'sora.openSegmentEditorPanel',
                         title: 'Open Segment Editor',
-                        arguments: [this.story.id, this.segmentIndex, segmentPath]
+                        arguments: [this.story.id, this.segmentIndex]
                     };
                 }
                 break;
