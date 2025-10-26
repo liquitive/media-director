@@ -988,6 +988,39 @@ OUTPUT REQUIREMENT:
         const batchCount = batchSegments.length;
         const batchSegmentIds = batchSegments.map((s: any) => s.id).join(', ');
         
+        // Identify segments that need establishment (first appearances)
+        const segmentsNeedingEstablishment: string[] = [];
+        for (const seg of segmentsWithContinuity) {
+          const hasFirstAppearance = seg.firstAppearanceByCharacter && seg.firstAppearanceByCharacter.length > 0;
+          const hasNoLocationRef = !seg.locationRef;
+          
+          if (hasFirstAppearance || hasNoLocationRef) {
+            const firstChars = seg.firstAppearanceByCharacter || [];
+            if (firstChars.length > 0) {
+              segmentsNeedingEstablishment.push(`${seg.id} (first appearance: ${firstChars.join(', ')})`);
+            } else if (hasNoLocationRef && seg.location) {
+              segmentsNeedingEstablishment.push(`${seg.id} (new location: ${seg.location})`);
+            }
+          }
+        }
+        
+        let establishmentGuidance = '';
+        if (segmentsNeedingEstablishment.length > 0) {
+          establishmentGuidance = `\n\nSEGMENTS NEEDING ESTABLISHMENT:
+The following segments introduce NEW characters/locations and MUST include establishing details:
+${segmentsNeedingEstablishment.map(s => `- ${s}: Describe appearance, setting details, visual characteristics`).join('\n')}
+
+For these segments with firstAppearanceByCharacter:
+- Include visual description of character (age, build, clothing, distinctive features)
+- Establish their presence in the scene
+- Set their relationship to the environment
+
+For segments with new locations (no locationRef):
+- Describe the setting (architecture, landscape, atmosphere)
+- Establish time of day, weather, lighting conditions
+- Ground the viewer in the space`;
+        }
+        
         let instructions: string;
         if (batchIndex === 0) {
           // First batch: Extract WHERE info from research for explicit scene establishment
@@ -1000,15 +1033,14 @@ Call generateSegments with an array of ${batchCount} segment objects.
 
 FIRST BATCH - ESTABLISH THE WORLD:
 
-Your first segment (segment_1) is THE ESTABLISHING SHOT. It must visually ground the viewer in the story's location and atmosphere.
-
-Key requirements for segment_1:
+segment_1 is THE ESTABLISHING SHOT. It must visually ground the viewer in the story's location and atmosphere.
 - MUST include explicit location details (island, coastline, cliffs, architecture, landscape features)
 - MUST establish the time period through visual elements
 - MUST set the atmospheric tone (desolate, peaceful, foreboding, etc.)
 - Include environmental details (weather, lighting, natural features)
 
 ${whereInfo ? `Location context:\n${whereInfo}\n` : ''}
+${establishmentGuidance}
 
 For ALL ${batchCount} segments:
 - Build the visual foundation and tone
@@ -1019,8 +1051,11 @@ CRITICAL: Output ALL ${batchCount} segments in your generateSegments call. Do no
         } else {
           instructions = `CRITICAL: Generate structured fields for ALL ${batchCount} segments (${batchSegmentIds}) in ONE function call.
 Call generateSegments with an array of ${batchCount} segment objects.
+${establishmentGuidance}
 
-Maintain consistency with prior batch. No trait repetition.`;
+Maintain consistency with prior batch. No trait repetition.
+
+CRITICAL: Output ALL ${batchCount} segments. Do not stop early.`;
         }
         
         // g. Retry loop for stuck/expired runs - EACH RETRY GETS A NEW THREAD
