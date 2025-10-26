@@ -415,8 +415,8 @@ export class OpenAIService {
                 if (progressCallback) {
                     const scaledProgress = 10 + Math.floor((currentProgress / 100) * 75);
                     const statusMsg = video.status === 'processing' || video.status === 'generating' 
-                        ? `Generating video... ${currentProgress}%`
-                        : `Status: ${video.status} (${currentProgress}%)`;
+                        ? `Generating video... ${scaledProgress}%`
+                        : `Status: ${video.status} (${scaledProgress}%)`;
                     
                     progressCallback(scaledProgress, statusMsg);
                 }
